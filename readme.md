@@ -3,9 +3,16 @@ This codebase simulates the behavior of superfluid helium vortex cores. MORE DES
 
 ### Usage
 
-Single run:
+Single run, uniform x-axis external flow, velocity 0.1 cm/s:
 ```
-cargo run -- single --radius 0.5 --height 1.0 --temp 1.5 --steps 1000 --output results.vtk
+cargo run -- single --gpu --radius 0.5 --height 1.0 --temp 1.5 --steps 1000 \
+  --ext-field rotation --ext-value 0,0,1.0 --ext-center 0,0,0.5
+```
+
+Single run, rotation field with z-axis rotation, centered at (0, 0, 0.5), angular velocity 1.0 rad/s:
+```
+cargo run -- single --gpu --radius 0.5 --height 1.0 --temp 1.5 --steps 1000 \
+  --ext-field rotation --ext-value 0,0,1.0 --ext-center 0,0,0.5
 ```
 
 Parameter study:
