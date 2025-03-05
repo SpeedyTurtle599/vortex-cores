@@ -287,6 +287,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let phase = *matches.get_one::<f64>("phase").unwrap();
             
             simulation::log_message(&format!("Setting external field: {}", ext_field_type));
+            if ext_field_type.eq_ignore_ascii_case("rotation") {
+                simulation::log_message(&format!("  Value: {}", field_value));
+            } else if ext_field_type.eq_ignore_ascii_case("oscillatory") {
+                simulation::log_message(&format!("  Value: {}, Frequency: {} Hz, Phase: {} rad", field_value, frequency, phase));
+            }
             
             match simulation::parse_external_field(
                 ext_field_type,
@@ -318,7 +323,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Save the results
         sim.save_results(output);
         
-        println!("Simulation complete! Results saved to {}", output);
+        println!("Results saved to {}", output);
     }
     // Handle resume command in single simulation mode
     else if let Some(matches) = matches.subcommand_matches("resume") {

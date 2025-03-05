@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
 use rand::prelude::*;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
 use once_cell::sync::Lazy;
 
 // MARK: Data Structures
@@ -65,28 +65,132 @@ pub struct SimulationStats {
 }
 
 // Global progress bar for coordinated output
-static PROGRESS_BAR: Lazy<Arc<Mutex<Option<ProgressBar>>>> = Lazy::new(|| {
+static PROGRESS_BAR: Lazy<Arc<Mutex<Option<(MultiProgress, ProgressBar)>>>> = Lazy::new(|| {
     Arc::new(Mutex::new(None))
 });
 
-pub fn set_global_progress_bar(bar: ProgressBar) {
+// Add status bars for different metrics
+static STATUS_LENGTH: Lazy<Arc<Mutex<Option<ProgressBar>>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(None))
+});
+
+static STATUS_ENERGY: Lazy<Arc<Mutex<Option<ProgressBar>>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(None))
+});
+
+static STATUS_CHECKPOINT: Lazy<Arc<Mutex<Option<ProgressBar>>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(None))
+});
+
+pub fn set_global_progress_bar(multi_progress: MultiProgress, bar: ProgressBar) {
+    // First, clear any existing progress bars
+    clear_global_progress_bar();
+    
+    // Now set up the new progress bar
     let mut global_bar = PROGRESS_BAR.lock().unwrap();
-    *global_bar = Some(bar);
+    *global_bar = Some((multi_progress.clone(), bar));
+    
+    // Create and add status bars
+    let length_bar = multi_progress.add(ProgressBar::new(1));
+    length_bar.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {msg}")
+        .unwrap());
+    length_bar.set_message("Total length: initializing...");
+    
+    let energy_bar = multi_progress.add(ProgressBar::new(1));
+    energy_bar.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {msg}")
+        .unwrap());
+    energy_bar.set_message("Energy values: calculating...");
+    
+    let checkpoint_bar = multi_progress.add(ProgressBar::new(1));
+    checkpoint_bar.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {msg}")
+        .unwrap());
+    checkpoint_bar.set_message("No checkpoints saved yet");
+    
+    // Store status bars
+    {
+        let mut length = STATUS_LENGTH.lock().unwrap();
+        *length = Some(length_bar);
+    }
+    
+    {
+        let mut energy = STATUS_ENERGY.lock().unwrap();
+        *energy = Some(energy_bar);
+    }
+    
+    {
+        let mut checkpoint = STATUS_CHECKPOINT.lock().unwrap();
+        *checkpoint = Some(checkpoint_bar);
+    }
 }
 
 pub fn clear_global_progress_bar() {
+    // Clear all status bars first
+    {
+        let mut length_bar = STATUS_LENGTH.lock().unwrap();
+        if let Some(bar) = length_bar.take() {
+            bar.finish_and_clear();
+        }
+    }
+    
+    {
+        let mut energy_bar = STATUS_ENERGY.lock().unwrap();
+        if let Some(bar) = energy_bar.take() {
+            bar.finish_and_clear();
+        }
+    }
+    
+    {
+        let mut checkpoint_bar = STATUS_CHECKPOINT.lock().unwrap();
+        if let Some(bar) = checkpoint_bar.take() {
+            bar.finish_and_clear();
+        }
+    }
+    
+    // Clear main progress bar
     let mut global_bar = PROGRESS_BAR.lock().unwrap();
-    if let Some(bar) = global_bar.take() {
+    if let Some((multi_progress, bar)) = global_bar.take() {
         bar.finish();
+        drop(multi_progress)
     }
 }
 
 pub fn log_message(message: &str) {
     let global_bar = PROGRESS_BAR.lock().unwrap();
-    if let Some(bar) = &*global_bar {
+    if let Some((_, bar)) = &*global_bar {
         bar.set_message(message.to_string());
     } else {
         println!("{}", message);
+    }
+}
+
+// New helper functions for specific status updates
+pub fn update_length_status(message: &str) {
+    let length_bar = STATUS_LENGTH.lock().unwrap();
+    if let Some(bar) = &*length_bar {
+        bar.set_message(message.to_string());
+    } else {
+        println!("Length: {}", message);
+    }
+}
+
+pub fn update_energy_status(message: &str) {
+    let energy_bar = STATUS_ENERGY.lock().unwrap();
+    if let Some(bar) = &*energy_bar {
+        bar.set_message(message.to_string());
+    } else {
+        println!("Energy: {}", message);
+    }
+}
+
+pub fn update_checkpoint_status(message: &str) {
+    let checkpoint_bar = STATUS_CHECKPOINT.lock().unwrap();
+    if let Some(bar) = &*checkpoint_bar {
+        bar.set_message(message.to_string());
+    } else {
+        println!("Checkpoint: {}", message);
     }
 }
 
@@ -155,14 +259,15 @@ impl VortexSimulation {
     }
     
     pub fn run(&mut self, steps: usize) {
-        let progress_bar = ProgressBar::new(steps as u64);
+        let multi_progress = MultiProgress::new();
+        let progress_bar = multi_progress.add(ProgressBar::new(steps as u64));
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) {msg}")
                 .unwrap()
                 .progress_chars("#>-")
         );
-        set_global_progress_bar(progress_bar.clone());
+        set_global_progress_bar(multi_progress, progress_bar.clone());
         
         progress_bar.set_message("Initializing simulation...");
         
@@ -187,10 +292,10 @@ impl VortexSimulation {
         for step in 0..steps {
             progress_bar.set_position(step as u64);
             
-            if step % 10 == 0 {
-                progress_bar.set_message(format!("Total length: {:.4} cm", 
-                    self.stats.total_length.last().unwrap_or(&0.0)));
-            }
+            // if step % 10 == 0 {
+            //     progress_bar.set_message(format!("Total length: {:.4} cm", 
+            //         self.stats.total_length.last().unwrap_or(&0.0)));
+            // }
             
             // Calculate vortex dynamics
             self.evolve_vortices(dt);
@@ -214,9 +319,15 @@ impl VortexSimulation {
             // Save checkpoint
             if step % checkpoint_interval == 0 && step > 0 {
                 let checkpoint_filename = format!("checkpoint_{}.json", step);
-                progress_bar.set_message(format!("Saving checkpoint: {}", checkpoint_filename));
+                
+                // Update the checkpoint status bar to "Saving..."
+                update_checkpoint_status(&format!("Saving: {}", checkpoint_filename));
+                
                 if let Err(e) = self.save_checkpoint(&checkpoint_filename) {
-                    progress_bar.set_message(format!("Error saving checkpoint: {}", e));
+                    update_checkpoint_status(&format!("Error saving: {}", e));
+                } else {
+                    // Update with success message containing the filename
+                    update_checkpoint_status(&format!("Last checkpoint: {}", checkpoint_filename));
                 }
             }
             
@@ -224,7 +335,7 @@ impl VortexSimulation {
         }
         
         progress_bar.finish_with_message(format!(
-            "Simulation complete! Final state: {} vortex lines, t = {:.3} s", 
+            "\nSimulation complete! Final state: {} vortex lines, t = {:.3} s", 
             self.vortex_lines.len(), self.time
         ));
         clear_global_progress_bar();
@@ -287,19 +398,20 @@ impl VortexSimulation {
         self.stats.kinetic_energy.push(kinetic_energy);
         self.stats.time_points.push(self.time);
         
+        // Update length status
+        update_length_status(&format!("Total length: {:.4} cm", total_length));
+        
         // Every 10 updates, calculate and print detailed energy breakdown
         if self.stats.time_points.len() % 10 == 0 {
             let (e_kin, e_pot, e_wave) = self.calculate_detailed_energy();
-            progress_bar.set_message(format!(
-                "L={:.4} cm, E_kin={:.2e}, E_pot={:.2e}, E_wave={:.2e}", 
-                total_length, e_kin, e_pot, e_wave
+            update_energy_status(&format!(
+                "E_kin={:.2e}, E_pot={:.2e}, E_wave={:.2e}", 
+                e_kin, e_pot, e_wave
             ));
         }
     }
 
-    fn initialize_vortices(&mut self) {
-        // Create more varied and interesting initial state
-        
+    fn initialize_vortices(&mut self) {        
         // First ring
         let ring_radius = self.radius * 0.5;
         let center = [0.0, 0.0, self.height * 0.3];
@@ -1038,13 +1150,15 @@ pub fn run_parameter_study(
     let mut run_count = 0;
     
     // Create progress bar
-    let progress_bar = ProgressBar::new(total_runs as u64);
-    progress_bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
+    let multi_progress = MultiProgress::new();
+        let progress_bar = multi_progress.add(ProgressBar::new(steps as u64));
+        progress_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        set_global_progress_bar(multi_progress, progress_bar.clone());
     
     // Reuse compute core across simulations if provided
     let shared_compute_core = compute_core;
