@@ -1,5 +1,4 @@
-Update Cargo.toml to add dependencies for numerical computation and visualization
-- Implement more accurate physics with the Gross-Pitaevskii equation or VFM (Vortex Filament Method)
+- Update Cargo.toml to add dependencies for numerical computation and visualization
 - Add advanced features like:
     - Temperature-dependent effects
     - External rotation or flow fields
@@ -11,11 +10,8 @@ Update Cargo.toml to add dependencies for numerical computation and visualizatio
 - External Flow Fields: Add capability to impose external velocity fields
 - Temperature-Dependent Effects: More sophisticated mutual friction models
 - Quantum Turbulence: Seed multiple vortices to observe tangle formation
-
-
 - More sophisticated reconnection algorithm: The current one is basic; a proper one would change the connectivity of lines
 - External flow field: Add capability to impose external flow fields to drive the vortex dynamics
-- WGPU compute shaders: Implement the simulation in a compute shader for GPU acceleration
 - Checkpointing: Add ability to save/resume simulations from specific timepoints
 - Parameter studies: Add command-line options to vary temperature, cylinder size, etc.
 - Vortex length and energy calculations: Track global quantities like total vortex line length and kinetic energy

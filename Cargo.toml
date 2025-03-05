@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rayon = "1.8"     # For parallel computation
-nalgebra = "0.32" # Linear algebra library for more sophisticated calculations
-rand = "0.8"      # For generating initial conditions
-indicatif = "0.17" # Progress bars for long simulations
+rayon = "1.10.0"        # For parallel computation
+nalgebra = "0.33.2"     # Linear algebra library for more sophisticated calculations
+rand = "0.9.0"          # For generating initial conditions
+indicatif = "0.17.11"   # Progress bars for long simulations
+clap = { version = "4.5.31", features = ["derive"] }    # Command-line argument parsing
+# hdf5 = "0.8.1"        # For HDF5 file output (alternative to VTK)
+serde = { version = "1.0.218", features = ["derive"] }  # For serialization (checkpointing)
+serde_json = "1.0.140"  # JSON serialization for checkpoints
