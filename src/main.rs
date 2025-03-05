@@ -42,6 +42,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .default_value("1.5"),
                 )
                 .arg(
+                    Arg::new("waves")
+                        .short('w')
+                        .long("waves")
+                        .value_name("AMPLITUDE")
+                        .help("Kelvin wave amplitude factor (0.0-1.0)")
+                        .default_value("0.1")
+                )
+                .arg(
                     Arg::new("steps")
                         .short('s')
                         .long("steps")
@@ -135,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let radius = matches.get_one::<String>("radius").unwrap().parse::<f64>()?;
         let height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
         let temperature = matches.get_one::<String>("temperature").unwrap().parse::<f64>()?;
+        let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
         let output = matches.get_one::<String>("output").unwrap();
 
@@ -145,6 +154,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Steps: {}", steps);
 
         let mut sim = VortexSimulation::new(radius, height, temperature);
+        if wave_amplitude > 0.0 {
+            sim.add_kelvin_waves(wave_amplitude * sim.radius, 3.0);
+        }
         sim.run(steps);
         sim.save_results(output);
         
@@ -159,6 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let temp_min = matches.get_one::<String>("temp_min").unwrap().parse::<f64>()?;
         let temp_max = matches.get_one::<String>("temp_max").unwrap().parse::<f64>()?;
         let temp_steps = matches.get_one::<String>("temp_steps").unwrap().parse::<usize>()?;
+        let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         let steps = matches.get_one::<String>("sim_steps").unwrap().parse::<usize>()?;
         let output_dir = matches.get_one::<String>("output_dir").unwrap();
         
@@ -171,6 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Radius range: {} to {} cm ({} steps)", radius_min, radius_max, radius_steps);
         println!("  Height: {} cm", height);
         println!("  Temperature range: {} to {} K ({} steps)", temp_min, temp_max, temp_steps);
+        println!("  Kelvin wave amplitude: {}", wave_amplitude);
         println!("  Simulation steps: {}", steps);
         println!("  Output directory: {}", output_dir);
         
@@ -181,6 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (temp_min + temp_max) / 2.0, // base_temperature (not used directly in sweep)
             (radius_min, radius_max, radius_steps),
             (temp_min, temp_max, temp_steps),
+            wave_amplitude,
             steps,
             output_dir,
         );

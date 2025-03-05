@@ -15,4 +15,5 @@ cargo run -- study --rmin 0.2 --rmax 1.0 --rsteps 4 --tmin 1.0 --tmax 2.1 --tste
 
 ### To Do
 - Update Cargo.toml to add webGPU dependencies for GPU acceleration
-- Finish implementing Kelvin waves
+- Debug apparent hang after 2 reconnections
+- Add more detailed description of the codebase and underlying physics

@@ -1,6 +1,5 @@
 // External crates
 use crate::physics;
-use crate::visualisation;
 use crate::extfields::ExternalField;
 use nalgebra::Vector3;
 use std::vec::Vec;
@@ -74,29 +73,6 @@ impl VortexSimulation {
         }
     }
     
-    pub fn set_external_field(&mut self, field: ExternalField) {
-        // Convert ExternalField to storable ExternalFieldParams
-        self.external_field = match field {
-            ExternalField::Rotation { angular_velocity, center } => Some(ExternalFieldParams::Rotation {
-                angular_velocity: [angular_velocity.x, angular_velocity.y, angular_velocity.z],
-                center: [center.x, center.y, center.z],
-            }),
-            ExternalField::UniformFlow { velocity } => Some(ExternalFieldParams::UniformFlow {
-                velocity: [velocity.x, velocity.y, velocity.z],
-            }),
-            ExternalField::OscillatoryFlow { amplitude, frequency, phase } => Some(ExternalFieldParams::OscillatoryFlow {
-                amplitude: [amplitude.x, amplitude.y, amplitude.z],
-                frequency,
-                phase,
-            }),
-            ExternalField::Counterflow { velocity } => Some(ExternalFieldParams::Counterflow {
-                velocity: [velocity.x, velocity.y, velocity.z],
-            }),
-            ExternalField::None => None,
-            ExternalField::PoiseuilleFlow { .. } => None, // Cannot be stored directly
-        };
-    }
-    
     fn get_external_field(&self) -> Option<ExternalField> {
         match &self.external_field {
             Some(ExternalFieldParams::Rotation { angular_velocity, center }) => {
@@ -131,8 +107,16 @@ impl VortexSimulation {
         
         // Initialize vortices
         self.initialize_vortices();
+
+        // Add Kelvin waves with amplitude proportional to temperature
+        // More thermal energy = more waves
+        if self.temperature > 0.1 {
+            let amplitude = 0.05 * self.radius * (self.temperature / 2.17);
+            let wavenumber = 2.0 + (self.temperature * 2.0); // More waves at higher temp
+            self.add_kelvin_waves(amplitude, wavenumber);
+        }
         
-        // Setup progress bar
+        // Set up progress bar
         let progress_bar = ProgressBar::new(steps as u64);
         progress_bar.set_style(
             ProgressStyle::default_bar()
@@ -186,68 +170,57 @@ impl VortexSimulation {
         
         progress_bar.finish_with_message("Simulation complete!");
     }
-    
+
     fn initialize_vortices(&mut self) {
         println!("Initializing vortex configuration...");
         
-        // Create a simple vortex ring
-        let ring_radius = self.radius * 0.5;
-        let center = [0.0, 0.0, self.height * 0.5];
-        let mut ring = self.create_vortex_ring(ring_radius, center);
+        // Create more varied and interesting initial state
         
-        // Add some Kelvin waves if needed
-        if let Some(params) = &self.external_field {
-            match params {
-                ExternalFieldParams::Rotation { .. } => {
-                    // For rotating superfluid, create vortex array
-                    self.create_vortex_array();
-                    return;
-                },
-                _ => {
-                    // Add some Kelvin waves to make it more interesting
-                    physics::add_kelvin_wave(&mut ring, 0.1, 5);
-                }
-            }
+        // First ring
+        let ring_radius = self.radius * 0.5;
+        let center = [0.0, 0.0, self.height * 0.3];
+        let mut ring1 = self.create_vortex_ring(ring_radius, center);
+        physics::add_kelvin_wave(&mut ring1, 0.15 * ring_radius, 4);
+        self.vortex_lines.push(ring1);
+        
+        // Second ring (titled)
+        let ring2_radius = self.radius * 0.45;
+        let center2 = [0.0, 0.0, self.height * 0.7];
+        let mut ring2 = self.create_vortex_ring(ring2_radius, center2);
+        
+        // Tilt the ring
+        for point in &mut ring2.points {
+            point.position[0] += 0.1 * self.radius;
+            point.position[2] -= 0.1 * (point.position[0] / ring2_radius) * self.radius;
         }
         
-        // Add more complex configurations depending on parameters
-        self.vortex_lines.push(ring);
-        
-        // Add a second ring to promote reconnections and tangle formation
-        let ring2_radius = self.radius * 0.4;
-        let center2 = [0.0, 0.0, self.height * 0.7];
-        let ring2 = self.create_vortex_ring(ring2_radius, center2);
+        physics::add_kelvin_wave(&mut ring2, 0.1 * ring2_radius, 3);
+        physics::update_tangent_vectors(&mut ring2);
         self.vortex_lines.push(ring2);
-    }
-    
-    fn create_vortex_array(&mut self) {
-        // Create array of vortices for rotation
-        let num_vortices = 10; // Arbitrary number for demonstration
-        let mut rng = rand::rng(); // Fix: use thread_rng() instead of rng()
         
-        for _ in 0..num_vortices {
-            // Place vortices randomly within the cylinder
-            let r = self.radius * 0.8 * rng.random::<f64>().sqrt(); // Fix: use gen instead of random
-            let theta = 2.0 * std::f64::consts::PI * rng.random::<f64>(); // Fix: use gen instead of random
-            let x = r * theta.cos();
-            let y = r * theta.sin();
-            let z_start = 0.1 * self.height;
-            let z_end = 0.9 * self.height;
-            
-            // Create a straight vortex line
-            let mut points = Vec::new();
-            let num_points = 50;
-            
-            for i in 0..num_points {
-                let z = z_start + (z_end - z_start) * (i as f64) / ((num_points - 1) as f64);
-                
-                points.push(VortexPoint {
-                    position: [x, y, z],
-                    tangent: [0.0, 0.0, 1.0],
-                });
-            }
-            
-            self.vortex_lines.push(VortexLine { points });
+        // Add a helical vortex line
+        let helix = self.create_helix(
+            self.radius * 0.3,
+            80,
+            4.0 * std::f64::consts::PI,
+            0.1 * self.height,
+            0.9 * self.height
+        );
+        self.vortex_lines.push(helix);
+        
+        // Add a vortex loop with figure-8 shape
+        let mut figure8 = self.create_figure8(
+            self.radius * 0.4,
+            self.radius * 0.25,
+            [0.0, 0.0, self.height * 0.5],
+            60
+        );
+        physics::update_tangent_vectors(&mut figure8);
+        self.vortex_lines.push(figure8);
+        
+        // If temperature is high, add some random vortex filaments
+        if self.temperature > 1.5 {
+            self.add_random_vortex_filaments(3 + (self.temperature as usize));
         }
     }
     
@@ -273,7 +246,111 @@ impl VortexSimulation {
             });
         }
         
-        VortexLine { points }
+        VortexLine{points}
+    }
+
+    // Helper method to create a helix
+    fn create_helix(&self, radius: f64, num_points: usize, total_angle: f64, 
+                    z_start: f64, z_end: f64) -> VortexLine {
+        let mut points = Vec::with_capacity(num_points);
+        
+        for i in 0..num_points {
+            let t = i as f64 / (num_points - 1) as f64;
+            let angle = t * total_angle;
+            let z = z_start + t * (z_end - z_start);
+            
+            points.push(VortexPoint {
+                position: [
+                    radius * angle.cos(),
+                    radius * angle.sin(),
+                    z
+                ],
+                tangent: [0.0, 0.0, 0.0], // Will be calculated later
+            });
+        }
+        
+        let mut helix = VortexLine{points};
+        physics::update_tangent_vectors(&mut helix);
+        helix
+    }
+    
+    // Helper method to create a figure-8 shape
+    fn create_figure8(&self, radius1: f64, radius2: f64, center: [f64; 3], num_points: usize) -> VortexLine {
+        let mut points = Vec::with_capacity(num_points);
+        
+        for i in 0..num_points {
+            let t = 2.0 * std::f64::consts::PI * (i as f64) / (num_points as f64);
+            
+            // Figure-8 parametric equation
+            let x = center[0] + radius1 * t.sin();
+            let y = center[1] + radius2 * t.sin() * t.cos();
+            let z = center[2] + radius2 * t.cos();
+            
+            points.push(VortexPoint {
+                position: [x, y, z],
+                tangent: [0.0, 0.0, 0.0], // Will be calculated later
+            });
+        }
+        
+        VortexLine{points}
+    }
+    
+    // Add random vortex filaments
+    fn add_random_vortex_filaments(&mut self, count: usize) {
+        let mut rng = rand::rng();
+        
+        for _ in 0..count {
+            // Create a random curved line
+            let num_points = 30 + (rng.random::<f64>() * 30.0) as usize;
+            let mut points = Vec::with_capacity(num_points);
+            
+            // Start at a random position
+            let start_x = (rng.random::<f64>() * 2.0 - 1.0) * self.radius * 0.8;
+            let start_y = (rng.random::<f64>() * 2.0 - 1.0) * self.radius * 0.8;
+            let start_z = (rng.random::<f64>() * self.height) * 0.8 + 0.1 * self.height;
+            
+            // Random direction
+            let dir_x = rng.random::<f64>() * 2.0 - 1.0;
+            let dir_y = rng.random::<f64>() * 2.0 - 1.0;
+            let dir_z = rng.random::<f64>() * 2.0 - 1.0;
+            let dir_mag = (dir_x*dir_x + dir_y*dir_y + dir_z*dir_z).sqrt();
+            
+            let dir_x = dir_x / dir_mag;
+            let dir_y = dir_y / dir_mag;
+            let dir_z = dir_z / dir_mag;
+            
+            // Create a curved path
+            for i in 0..num_points {
+                let t = i as f64 / (num_points - 1) as f64;
+                
+                // Add some randomness to the path
+                let wobble_x = (t * 7.0).sin() * 0.1 * self.radius;
+                let wobble_y = (t * 8.0).cos() * 0.1 * self.radius;
+                let wobble_z = (t * 5.0).sin() * 0.1 * self.radius;
+                
+                let x = start_x + t * dir_x * self.radius * 1.6 + wobble_x;
+                let y = start_y + t * dir_y * self.radius * 1.6 + wobble_y;
+                let z = start_z + t * dir_z * self.height * 0.8 + wobble_z;
+                
+                // Keep within bounds
+                let r_squared = x*x + y*y;
+                if r_squared > self.radius * self.radius * 0.9 || 
+                   z < 0.05 * self.height || z > 0.95 * self.height {
+                    continue;
+                }
+                
+                points.push(VortexPoint {
+                    position: [x, y, z],
+                    tangent: [0.0, 0.0, 0.0], // Will be calculated later
+                });
+            }
+            
+            if points.len() >= 3 {
+                let mut line = VortexLine { points };
+                physics::update_tangent_vectors(&mut line);
+                self.vortex_lines.push(line);
+            }
+        }
     }
     
     fn evolve_vortices(&mut self, dt: f64) {
@@ -442,8 +519,8 @@ impl VortexSimulation {
                 for point in &line.points {
                     // Convert position to Vector3
                     let pos = Vector3::new(
-                        point.position[0], 
-                        point.position[1], 
+                        point.position[0],
+                        point.position[1],
                         point.position[2]
                     );
                     
@@ -460,8 +537,7 @@ impl VortexSimulation {
                             // Potential energy in rotation frame (simplified model)
                             e_potential += -rho_s * kappa * omega * r_perp.norm_squared() / 2.0;
                         },
-                        // Add other field types as needed
-                        _ => {}
+                        _ => {} // No additional potential for other field types
                     }
                 }
             }
@@ -733,6 +809,7 @@ pub fn run_parameter_study(
     base_temperature: f64,
     radius_range: (f64, f64, usize),       // (min, max, steps)
     temperature_range: (f64, f64, usize),  // (min, max, steps)
+    wave_amplitude: f64,
     steps: usize,
     output_dir: &str,
 ) -> Vec<SimulationResult> {
@@ -759,6 +836,9 @@ pub fn run_parameter_study(
             
             // Create and run simulation with these parameters
             let mut sim = VortexSimulation::new(radius, base_height, temperature);
+            if wave_amplitude > 0.0 {
+                sim.add_kelvin_waves(wave_amplitude * sim.radius, 3.0);
+            }
             sim.run(steps);
             
             // Save results
