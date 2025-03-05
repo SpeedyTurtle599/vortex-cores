@@ -3,12 +3,15 @@ mod simulation;
 mod physics;
 mod visualisation;
 mod extfields;
+mod compute;
+
+use crate::compute::ComputeCore;
+use crate::simulation::{VortexSimulation, run_parameter_study, SimulationResult};
 
 // External crates
 use clap::{Arg, Command};
-use std::fs::create_dir_all;
+use std::{default, fs::create_dir_all};
 use std::path::Path;
-use crate::simulation::{VortexSimulation, run_parameter_study, SimulationResult};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = Command::new("Vortex Cores")
@@ -17,6 +20,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .subcommand(
             Command::new("single")
                 .about("Run a single simulation with specified parameters")
+                .arg(
+                    Arg::new("gpu")
+                        .short('g')
+                        .long("gpu")
+                        .help("Use GPU for computation")
+                        .action(clap::ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("list_gpus")
+                        .long("list-gpus")
+                        .help("List available GPUs and exit")
+                        .action(clap::ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("select_gpu")
+                        .long("select-gpu")
+                        .help("Select a specific GPU by name fragment (case-insensitive)")
+                        .value_name("NAME")
+                )
                 .arg(
                     Arg::new("radius")
                         .short('r')
@@ -50,6 +72,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .default_value("0.1")
                 )
                 .arg(
+                    Arg::new("ext_field")
+                        .short('e')
+                        .long("ext-field")
+                        .value_name("TYPE")
+                        .help("External field type (none, rotation, uniform, oscillatory, counterflow)")
+                        .default_value("none")
+                )
+                .arg(
+                    Arg::new("ext_value")
+                        .long("ext-value")
+                        .value_name("VALUE")
+                        .help("External field value (format depends on field type)")
+                        .default_value("0.0,0.0,0.0")
+                )
+                .arg(
+                    Arg::new("ext_center")
+                        .long("ext-center")
+                        .value_name("CENTER")
+                        .help("Center point for rotation field (x,y,z)")
+                        .default_value("0.0,0.0,0.0")
+                )
+                .arg(
+                    Arg::new("ext_freq")
+                        .long("ext-freq")
+                        .value_name("FREQ")
+                        .help("Frequency for oscillatory flow (Hz)")
+                        .default_value("1.0")
+                )
+                .arg(
+                    Arg::new("ext_phase")
+                        .long("ext-phase")
+                        .value_name("PHASE")
+                        .help("Phase for oscillatory flow (radians)")
+                        .default_value("0.0")
+                )
+                .arg(
                     Arg::new("steps")
                         .short('s')
                         .long("steps")
@@ -69,6 +127,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .subcommand(
             Command::new("study")
                 .about("Run a parameter study with ranges of values")
+                .arg(
+                    Arg::new("gpu")
+                        .short('g')
+                        .long("gpu")
+                        .help("Use GPU for computation")
+                        .action(clap::ArgAction::SetTrue)
+                )
                 .arg(
                     Arg::new("radius_min")
                         .long("rmin")
@@ -128,6 +193,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .default_value("500"),
                 )
                 .arg(
+                    Arg::new("waves")
+                        .short('w')
+                        .long("waves")
+                        .value_name("AMPLITUDE")
+                        .help("Kelvin wave amplitude factor (0.0-1.0)")
+                        .default_value("0.1")
+                )
+                .arg(
+                    Arg::new("ext_field")
+                        .short('e')
+                        .long("ext-field")
+                        .value_name("TYPE")
+                        .help("External field type (none, rotation, uniform, oscillatory, counterflow)")
+                        .default_value("none")
+                )
+                .arg(
+                    Arg::new("ext_value")
+                        .long("ext-value")
+                        .value_name("VALUE")
+                        .help("External field value (format depends on field type)")
+                        .default_value("0.0,0.0,0.0")
+                )
+                .arg(
+                    Arg::new("ext_center")
+                        .long("ext-center")
+                        .value_name("CENTER")
+                        .help("Center point for rotation field (x,y,z)")
+                        .default_value("0.0,0.0,0.0")
+                )
+                .arg(
+                    Arg::new("ext_freq")
+                        .long("ext-freq")
+                        .value_name("FREQ")
+                        .help("Frequency for oscillatory flow (Hz)")
+                        .default_value("1.0")
+                )
+                .arg(
+                    Arg::new("ext_phase")
+                        .long("ext-phase")
+                        .value_name("PHASE")
+                        .help("Phase for oscillatory flow (radians)")
+                        .default_value("0.0")
+                )
+                .arg(
                     Arg::new("output_dir")
                         .short('o')
                         .long("output")
@@ -140,23 +249,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle single simulation
     if let Some(matches) = matches.subcommand_matches("single") {
+        // If list-gpus flag is set, list available GPUs and exit
+        if matches.get_flag("list_gpus") {
+            println!("Listing available GPUs...");
+            let gpus = pollster::block_on(async { ComputeCore::list_available_gpus().await });
+            
+            if gpus.is_empty() {
+                println!("No compatible GPUs found!");
+            } else {
+                println!("Available GPUs:");
+                for (i, (name, device_type, compatibility)) in gpus.iter().enumerate() {
+                    println!("  {}: {} ({}) - {}", i, name, 
+                        match device_type {
+                            wgpu::DeviceType::DiscreteGpu => "Discrete",
+                            wgpu::DeviceType::IntegratedGpu => "Integrated",
+                            wgpu::DeviceType::Cpu => "CPU",
+                            wgpu::DeviceType::Other => "Other",
+                            _ => "Unknown",
+                        },
+                        compatibility
+                    );
+                }
+            }
+            return Ok(());
+        }
         let radius = matches.get_one::<String>("radius").unwrap().parse::<f64>()?;
         let height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
         let temperature = matches.get_one::<String>("temperature").unwrap().parse::<f64>()?;
         let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
         let output = matches.get_one::<String>("output").unwrap();
+        let use_gpu = matches.get_flag("gpu");
+        let selected_gpu = matches.get_one::<String>("select_gpu").map(|s| s.as_str());
+        
+        // Process external field parameters
+        let external_field = simulation::parse_external_field(
+            matches.get_one::<String>("ext_field").unwrap(),
+            matches.get_one::<String>("ext_value").unwrap(),
+            matches.get_one::<String>("ext_center").unwrap(),
+            matches.get_one::<String>("ext_freq").unwrap().parse::<f64>()?,
+            matches.get_one::<String>("ext_phase").unwrap().parse::<f64>()?,
+        )?;
 
         println!("Running single simulation with parameters:");
         println!("  Radius: {} cm", radius);
         println!("  Height: {} cm", height);
         println!("  Temperature: {} K", temperature);
         println!("  Steps: {}", steps);
+        if let Some(field) = &external_field {
+            println!("  External field: {:?}", field);
+        }
+        println!("  Using GPU: {}", use_gpu);
 
-        let mut sim = VortexSimulation::new(radius, height, temperature);
+        // Create simulation and optionally initialize GPU
+        let mut sim = if use_gpu {
+            println!("Initializing GPU...");
+            pollster::block_on(async {
+                if let Some(gpu_name) = selected_gpu {
+                    let compute_core = ComputeCore::new_with_device_preference(Some(gpu_name)).await;
+                    VortexSimulation::new_with_compute_core(radius, height, temperature, compute_core)
+                } else {
+                    VortexSimulation::new_with_gpu(radius, height, temperature).await
+                }
+            })
+        } else {
+            VortexSimulation::new(radius, height, temperature)
+        };
+        
+        // Set external field if specified
+        if let Some(field) = external_field {
+            sim.external_field = Some(field);
+        }
+        
         if wave_amplitude > 0.0 {
             sim.add_kelvin_waves(wave_amplitude * sim.radius, 3.0);
         }
+        
         sim.run(steps);
         sim.save_results(output);
         

@@ -1,6 +1,7 @@
 // External crates
 use crate::physics;
 use crate::extfields::ExternalField;
+use crate::compute::ComputeCore;
 use nalgebra::Vector3;
 use std::vec::Vec;
 use std::fs::File;
@@ -23,6 +24,7 @@ pub struct VortexLine {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VortexSimulation {
+    compute_core: Option<ComputeCore>,
     pub radius: f64,
     pub height: f64,
     pub temperature: f64,
@@ -63,6 +65,7 @@ pub struct SimulationStats {
 impl VortexSimulation {
     pub fn new(radius: f64, height: f64, temperature: f64) -> Self {
         VortexSimulation {
+            compute_core: None,
             radius,
             height,
             temperature,
@@ -71,6 +74,18 @@ impl VortexSimulation {
             external_field: None,
             stats: SimulationStats::default(),
         }
+    }
+
+    pub async fn new_with_gpu(radius: f64, height: f64, temperature: f64) -> Self {
+        let mut sim = Self::new(radius, height, temperature);
+        sim.compute_core = Some(ComputeCore::new().await);
+        sim
+    }
+
+    pub fn new_with_compute_core(radius: f64, height: f64, temperature: f64, compute_core: ComputeCore) -> Self {
+        let mut sim = Self::new(radius, height, temperature);
+        sim.compute_core = Some(compute_core);
+        sim
     }
     
     fn get_external_field(&self) -> Option<ExternalField> {
@@ -353,6 +368,7 @@ impl VortexSimulation {
         }
     }
     
+    // Inside VortexSimulation impl
     fn evolve_vortices(&mut self, dt: f64) {
         // Get external field for this time step
         let ext_field = self.get_external_field();
@@ -362,14 +378,37 @@ impl VortexSimulation {
             self.add_thermal_fluctuations(dt);
         }
         
-        // Evolve the vortex network with parallel computation
-        physics::evolve_vortex_network(
-            &mut self.vortex_lines, 
-            dt, 
-            self.temperature,
-            ext_field.as_ref(),
-            self.time
-        );
+        // Check if we have a GPU compute core
+        if let Some(compute_core) = &self.compute_core {
+            // Use GPU for velocity calculations
+            let velocities = compute_core.calculate_velocities(
+                &self.vortex_lines, 
+                self.temperature,
+                self.time,
+                self.radius,
+                self.height,
+                self.external_field.as_ref()
+            );
+            
+            // Apply velocities to evolve vortex positions
+            for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
+                for (point_idx, point) in line.points.iter_mut().enumerate() {
+                    let velocity = &velocities[line_idx][point_idx];
+                    point.position[0] += velocity[0] * dt;
+                    point.position[1] += velocity[1] * dt;
+                    point.position[2] += velocity[2] * dt;
+                }
+            }
+        } else {
+            // Fall back to CPU calculations
+            physics::evolve_vortex_network(
+                &mut self.vortex_lines, 
+                dt, 
+                self.temperature,
+                ext_field.as_ref(),
+                self.time
+            );
+        }
     }
 
     fn add_thermal_fluctuations(&mut self, dt: f64) {
@@ -875,6 +914,62 @@ fn generate_parameter_range(min: f64, max: f64, steps: usize) -> Vec<f64> {
         values.push(min + (i as f64) * step_size);
     }
     values
+}
+
+pub fn parse_external_field(
+    field_type: &str,
+    value_str: &str,
+    center_str: &str,
+    frequency: f64,
+    phase: f64,
+) -> Result<Option<ExternalFieldParams>, Box<dyn std::error::Error>> {
+    // Parse vector values
+    fn parse_vec3(s: &str) -> Result<[f64; 3], Box<dyn std::error::Error>> {
+        let parts: Vec<&str> = s.split(',').collect();
+        if parts.len() != 3 {
+            return Err("Vector format should be 'x,y,z'".into());
+        }
+        
+        Ok([
+            parts[0].trim().parse::<f64>()?,
+            parts[1].trim().parse::<f64>()?,
+            parts[2].trim().parse::<f64>()?,
+        ])
+    }
+
+    match field_type.to_lowercase().as_str() {
+        "none" => Ok(None),
+        
+        "rotation" => {
+            let angular_velocity = parse_vec3(value_str)?;
+            let center = parse_vec3(center_str)?;
+            Ok(Some(ExternalFieldParams::Rotation { 
+                angular_velocity,
+                center
+            }))
+        },
+        
+        "uniform" => {
+            let velocity = parse_vec3(value_str)?;
+            Ok(Some(ExternalFieldParams::UniformFlow { velocity }))
+        },
+        
+        "oscillatory" => {
+            let amplitude = parse_vec3(value_str)?;
+            Ok(Some(ExternalFieldParams::OscillatoryFlow { 
+                amplitude,
+                frequency, 
+                phase
+            }))
+        },
+        
+        "counterflow" => {
+            let velocity = parse_vec3(value_str)?;
+            Ok(Some(ExternalFieldParams::Counterflow { velocity }))
+        },
+        
+        _ => Err(format!("Unknown external field type: {}", field_type).into())
+    }
 }
 
 // MARK: Simulation Result

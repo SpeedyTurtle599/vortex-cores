@@ -6,9 +6,13 @@ edition = "2024"
 [dependencies]
 rayon = "1.10.0"        # CPU threading support
 wgpu = "24.0.1"         # GPU computing support
+pollster = "0.4.0"      # Sync operations
+futures = "0.3.31"      # Asynchronous streams
 nalgebra = "0.33.2"     # Linear algebra operations
 rand = "0.9.0"          # For generating random initial conditions
 indicatif = "0.17.11"   # Progress bars for long simulations
 serde_json = "1.0.140"  # JSON serialization for checkpoints
-serde = { version = "1.0.218", features = ["derive"] }  # Serialization (checkpointing)
-clap = { version = "4.5.31", features = ["derive"] }    # Command-line argument parsing
+futures-intrusive = "0.5.0"                             # Intrusive data structures
+serde = {version = "1.0.218", features = ["derive"]}    # Serialization (checkpointing)
+bytemuck = {version = "1.22.0", features = ["derive"]}  # Memory operations
+clap = {version = "4.5.31", features = ["derive"]}      # Command-line argument parsing
