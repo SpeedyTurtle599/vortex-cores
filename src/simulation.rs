@@ -87,6 +87,15 @@ impl VortexSimulation {
         sim.compute_core = Some(compute_core);
         sim
     }
+
+    pub fn with_compute_core(mut self, compute_core: ComputeCore) -> Self {
+        self.compute_core = Some(compute_core);
+        self
+    }
+
+    pub fn set_compute_core(&mut self, compute_core: ComputeCore) {
+        self.compute_core = Some(compute_core);
+    }
     
     fn get_external_field(&self) -> Option<ExternalField> {
         match &self.external_field {
@@ -927,6 +936,7 @@ pub fn run_parameter_study(
     }
     
     progress_bar.finish_with_message("Parameter study complete!");
+    println!("Finished running {} simulations", run_count);
     results
 }
 

@@ -77,7 +77,7 @@ impl ExternalField {
     }
     
     /// Calculate mutual friction contribution from normal fluid
-    pub fn mutual_friction(&self, position: &Vector3<f64>, tangent: &Vector3<f64>, time: f64, temperature: f64) -> Vector3<f64> {
+    pub fn mutual_friction(&self, _position: &Vector3<f64>, tangent: &Vector3<f64>, _time: f64, temperature: f64) -> Vector3<f64> {
         // Only relevant for counterflow and at temperatures above absolute zero
         if temperature < 0.001 {
             return Vector3::zeros();

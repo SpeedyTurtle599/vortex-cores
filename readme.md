@@ -123,6 +123,43 @@ cargo run -- study --gpu --rmin 0.2 --rmax 1.0 --rsteps 4 --tmin 1.0 --tmax 2.1 
   --tsteps 5 --steps 500 --ext-field rotation --ext-value 0,0,1.0 --output study_results
 ```
 
+### Checkpointing and Restart
+
+The simulation includes a comprehensive checkpoint system that allows you to:
+- Save simulation state automatically at regular intervals (every 100 steps)
+- Manually save checkpoints using the `save_checkpoint` method
+- Resume simulations from checkpoints without losing state
+- Switch between CPU and GPU computation when resuming
+- Modify simulation parameters when resuming
+
+#### Working with Checkpoints
+
+Checkpoints are stored as JSON files containing:
+- Simulation parameters (radius, height, temperature)
+- Current simulation time
+- Complete vortex line geometry
+- Statistical data collected during simulation
+
+##### Listing available checkpoints:
+```
+cargo run -- list-checkpoints
+```
+
+##### Loading a checkpoint with the standard command:
+```
+cargo run -- single --load-checkpoint checkpoint_500.json --gpu --steps 1000 --output resumed.vtk
+```
+
+##### Using the dedicated resume command:
+```
+cargo run -- resume --gpu --load-checkpoint checkpoint_500.json --steps 1000 --output resumed.vtk
+```
+
+##### Changing external field when resuming:
+```
+cargo run -- resume checkpoint_500.json --gpu --ext-field rotation --ext-value 0,0,2.0 --steps 500
+```
+
 ## Assumptions and Limitations
 
 This simulation makes the following key assumptions:

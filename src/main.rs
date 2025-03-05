@@ -5,11 +5,11 @@ mod extfields;
 mod compute;
 
 use crate::compute::ComputeCore;
-use crate::simulation::{VortexSimulation, run_parameter_study, SimulationResult};
+use crate::simulation::{VortexSimulation, run_parameter_study};
 
 // External crates
 use clap::{Arg, Command};
-use std::{default, fs::create_dir_all};
+use std::fs::create_dir_all;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,6 +19,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .subcommand(
             Command::new("single")
                 .about("Run a single simulation with specified parameters")
+                .arg(
+                    Arg::new("checkpoint")
+                        .required(false)
+                        .help("Path to checkpoint file")
+                        .index(1)
+                )
+                .arg(
+                    Arg::new("load_checkpoint")
+                        .long("load-checkpoint")
+                        .value_name("CHECKPOINT_FILE")
+                        .help("Load simulation state from checkpoint file")
+                )
                 .arg(
                     Arg::new("gpu")
                         .short('g')
@@ -256,6 +268,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .default_value("study_results"),
                 )
         )
+        .subcommand(
+            Command::new("list-checkpoints")
+                .about("List available checkpoint files")
+                .arg(
+                    Arg::new("directory")
+                        .help("Directory to search for checkpoints")
+                        .default_value(".")
+                        .index(1)
+                )
+        )
         .get_matches();
 
     // Handle single simulation
@@ -284,62 +306,157 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             return Ok(());
         }
-        let radius = matches.get_one::<String>("radius").unwrap().parse::<f64>()?;
-        let height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
-        let temperature = matches.get_one::<String>("temperature").unwrap().parse::<f64>()?;
-        let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
-        let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
-        let output = matches.get_one::<String>("output").unwrap();
+        
         let use_gpu = matches.get_flag("gpu");
         let selected_gpu = matches.get_one::<String>("select_gpu").map(|s| s.as_str());
+        let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
+        let output = matches.get_one::<String>("output").unwrap();
         
-        // Process external field parameters
-        let external_field = simulation::parse_external_field(
-            matches.get_one::<String>("ext_field").unwrap(),
-            matches.get_one::<String>("ext_value").unwrap(),
-            matches.get_one::<String>("ext_center").unwrap(),
-            matches.get_one::<String>("ext_freq").unwrap().parse::<f64>()?,
-            matches.get_one::<String>("ext_phase").unwrap().parse::<f64>()?,
-        )?;
-
-        println!("Running single simulation with parameters:");
-        println!("  Radius: {} cm", radius);
-        println!("  Height: {} cm", height);
-        println!("  Temperature: {} K", temperature);
-        println!("  Steps: {}", steps);
-        if let Some(field) = &external_field {
-            println!("  External field: {:?}", field);
-        }
-        println!("  Using GPU: {}", use_gpu);
-
-        // Create simulation and optionally initialize GPU
-        let mut sim = if use_gpu {
-            println!("Initializing GPU...");
-            pollster::block_on(async {
-                if let Some(gpu_name) = selected_gpu {
-                    let compute_core = ComputeCore::new_with_device_preference(Some(gpu_name)).await;
-                    VortexSimulation::new_with_compute_core(radius, height, temperature, compute_core)
-                } else {
-                    VortexSimulation::new_with_gpu(radius, height, temperature).await
+        // Check if we should load from checkpoint or create a new simulation
+        let mut sim = if let Some(checkpoint_file) = matches.get_one::<String>("load_checkpoint") {
+            println!("Loading simulation from checkpoint: {}", checkpoint_file);
+            
+            // Load checkpoint
+            match VortexSimulation::load_checkpoint(checkpoint_file) {
+                Ok(mut loaded_sim) => {
+                    println!("Checkpoint loaded successfully!");
+                    println!("  Radius: {} cm", loaded_sim.radius);
+                    println!("  Height: {} cm", loaded_sim.height);
+                    println!("  Temperature: {} K", loaded_sim.temperature);
+                    println!("  Current simulation time: {} s", loaded_sim.time);
+                    println!("  Vortex lines: {}", loaded_sim.vortex_lines.len());
+                    
+                    // Initialize GPU if requested
+                    if use_gpu {
+                        println!("Initializing GPU for loaded simulation...");
+                        let compute_core = pollster::block_on(async {
+                            if let Some(gpu_name) = selected_gpu {
+                                ComputeCore::new_with_device_preference(Some(gpu_name)).await
+                            } else {
+                                ComputeCore::new().await
+                            }
+                        });
+                        loaded_sim.set_compute_core(compute_core);
+                    }
+                    
+                    loaded_sim
+                },
+                Err(e) => {
+                    eprintln!("Error loading checkpoint: {}", e);
+                    return Err(format!("Failed to load checkpoint: {}", e).into());
                 }
-            })
+            }
         } else {
-            VortexSimulation::new(radius, height, temperature)
+            // Create a new simulation with parameters
+            let radius = matches.get_one::<String>("radius").unwrap().parse::<f64>()?;
+            let height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
+            let temperature = matches.get_one::<String>("temperature").unwrap().parse::<f64>()?;
+            
+            println!("Running single simulation with parameters:");
+            println!("  Radius: {} cm", radius);
+            println!("  Height: {} cm", height);
+            println!("  Temperature: {} K", temperature);
+            println!("  Steps: {}", steps);
+            println!("  Using GPU: {}", use_gpu);
+
+            // Create simulation and optionally initialize GPU
+            if use_gpu {
+                println!("Initializing GPU...");
+                pollster::block_on(async {
+                    if let Some(gpu_name) = selected_gpu {
+                        let compute_core = ComputeCore::new_with_device_preference(Some(gpu_name)).await;
+                        VortexSimulation::new_with_compute_core(radius, height, temperature, compute_core)
+                    } else {
+                        VortexSimulation::new_with_gpu(radius, height, temperature).await
+                    }
+                })
+            } else {
+                VortexSimulation::new(radius, height, temperature)
+            }
         };
         
-        // Set external field if specified
-        if let Some(field) = external_field {
-            sim.external_field = Some(field);
+        // Process external field parameters and apply if specified
+        // (only for new simulations or if we want to override the checkpoint's field)
+        if !matches.get_one::<String>("ext_field").unwrap().eq_ignore_ascii_case("none") {
+            let external_field = simulation::parse_external_field(
+                matches.get_one::<String>("ext_field").unwrap(),
+                matches.get_one::<String>("ext_value").unwrap(),
+                matches.get_one::<String>("ext_center").unwrap(),
+                matches.get_one::<String>("ext_freq").unwrap().parse::<f64>()?,
+                matches.get_one::<String>("ext_phase").unwrap().parse::<f64>()?,
+            )?;
+            
+            // Set external field if specified
+            if let Some(field) = external_field {
+                println!("Setting external field: {:?}", field);
+                sim.external_field = Some(field);
+            }
         }
         
+        // Add Kelvin waves if requested
+        let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         if wave_amplitude > 0.0 {
+            println!("Adding Kelvin waves with amplitude factor: {}", wave_amplitude);
             sim.add_kelvin_waves(wave_amplitude * sim.radius, 3.0);
         }
         
+        // Run the simulation
         sim.run(steps);
+        
+        // Save the results
         sim.save_results(output);
         
         println!("Simulation complete! Results saved to {}", output);
+    }
+    // Handle resume command in single simulation mode
+    else if let Some(matches) = matches.subcommand_matches("resume") {
+        let checkpoint_file = matches.get_one::<String>("checkpoint").unwrap();
+        let use_gpu = matches.get_flag("gpu");
+        let selected_gpu = matches.get_one::<String>("select_gpu").map(|s| s.as_str());
+        let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
+        let output = matches.get_one::<String>("output").unwrap();
+        
+        println!("Resuming simulation from checkpoint: {}", checkpoint_file);
+        
+        // Load the checkpoint
+        let mut sim = match VortexSimulation::load_checkpoint(checkpoint_file) {
+            Ok(mut loaded_sim) => {
+                println!("Checkpoint loaded successfully!");
+                println!("  Radius: {} cm", loaded_sim.radius);
+                println!("  Height: {} cm", loaded_sim.height);
+                println!("  Temperature: {} K", loaded_sim.temperature);
+                println!("  Current simulation time: {} s", loaded_sim.time);
+                println!("  Vortex lines: {}", loaded_sim.vortex_lines.len());
+                
+                // Initialize GPU if requested
+                if use_gpu {
+                    println!("Initializing GPU for loaded simulation...");
+                    let compute_core = pollster::block_on(async {
+                        if let Some(gpu_name) = selected_gpu {
+                            ComputeCore::new_with_device_preference(Some(gpu_name)).await
+                        } else {
+                            ComputeCore::new().await
+                        }
+                    });
+                    loaded_sim.set_compute_core(compute_core);
+                }
+                
+                loaded_sim
+            },
+            Err(e) => {
+                eprintln!("Error loading checkpoint: {}", e);
+                return Err(format!("Failed to load checkpoint: {}", e).into());
+            }
+        };
+        
+        // Continue the simulation
+        println!("Continuing simulation for {} more steps...", steps);
+        sim.run(steps);
+        
+        // Save the results
+        sim.save_results(output);
+        
+        println!("Resumed simulation complete! Results saved to {}", output);
     }
     // Handle parameter study
     else if let Some(matches) = matches.subcommand_matches("study") {
@@ -441,6 +558,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_writer_pretty(file, &results)?;
         
         println!("Parameter study complete! Summary saved to {}", summary_file);
+    }
+    else if let Some(matches) = matches.subcommand_matches("list-checkpoints") {
+        let dir = matches.get_one::<String>("directory").unwrap();
+        
+        println!("Searching for checkpoint files in '{}'...", dir);
+        
+        let paths = std::fs::read_dir(dir)?;
+        let mut checkpoints = Vec::new();
+        
+        for path in paths {
+            let path = path?.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "json" {
+                        if let Some(filename) = path.file_name() {
+                            let filename = filename.to_string_lossy();
+                            if filename.contains("checkpoint") {
+                                checkpoints.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if checkpoints.is_empty() {
+            println!("No checkpoint files found.");
+        } else {
+            println!("Found {} checkpoint files:", checkpoints.len());
+            
+            for (i, path) in checkpoints.iter().enumerate() {
+                // Try to open the checkpoint to get basic info
+                match VortexSimulation::load_checkpoint(path.to_string_lossy().as_ref()) {
+                    Ok(sim) => {
+                        println!("{}. {} - Time: {:.3}s, Lines: {}, Temp: {:.2}K", 
+                            i+1,
+                            path.file_name().unwrap().to_string_lossy(),
+                            sim.time,
+                            sim.vortex_lines.len(),
+                            sim.temperature
+                        );
+                    },
+                    Err(_) => {
+                        println!("{}. {} (invalid/corrupted)", 
+                            i+1,
+                            path.file_name().unwrap().to_string_lossy()
+                        );
+                    }
+                }
+            }
+        }
     }
     // Default behavior if no subcommand is provided
     else {

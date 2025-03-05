@@ -107,7 +107,7 @@ pub fn add_kelvin_wave(line: &mut VortexLine, amplitude: f64, wavelengths: usize
         
         // Create orthogonal vectors to tangent
         // We need two vectors perpendicular to tangent and to each other
-        let mut v1 = [0.0, 0.0, 0.0];
+        let mut v1: [f64; 3];
         
         // Find a vector that's not parallel to tangent
         if tangent[0].abs() < 0.9 {

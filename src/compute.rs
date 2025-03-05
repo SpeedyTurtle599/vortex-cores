@@ -1,46 +1,36 @@
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 use bytemuck::{Pod, Zeroable};
-use std::fmt;
+use serde::{Serialize, Deserialize};
 use crate::simulation::{VortexLine, ExternalFieldParams};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ComputeCore {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
 }
 
-// Manually implement Debug for ComputeCore
-impl fmt::Debug for ComputeCore {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ComputeCore")
-            .field("device_type", &"wgpu::Device")
-            .field("queue_type", &"wgpu::Queue")
-            .finish()
-    }
-}
-
-// Manually implement Serialize for ComputeCore
-impl serde::Serialize for ComputeCore {
+impl Serialize for ComputeCore {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        // Skip serializing compute core - just serialize unit
-        serializer.serialize_unit()
+        // Just serialize a placeholder - we can't actually serialize GPU devices
+        serializer.serialize_none()
     }
 }
 
-// Manually implement Deserialize for ComputeCore
-impl<'de> serde::Deserialize<'de> for ComputeCore {
+impl<'de> Deserialize<'de> for ComputeCore {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        // Consume the unit value but return error since we can't actually deserialize
-        // a compute core directly
-        let _ = <()>::deserialize(deserializer)?;
-        Err(serde::de::Error::custom("ComputeCore cannot be deserialized directly. Use ComputeCore::new() instead."))
+        // Skip deserialization - we'll create a new compute core instead
+        let _ = Option::<()>::deserialize(deserializer)?;
+        
+        // Return a placeholder that will be replaced
+        // This isn't actually used since we immediately replace it in the with_compute_core call
+        Err(serde::de::Error::custom("ComputeCore cannot be deserialized"))
     }
 }
 
