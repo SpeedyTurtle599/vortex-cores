@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rayon = "1.8"     # For parallel computation
+nalgebra = "0.32" # Linear algebra library for more sophisticated calculations
+rand = "0.8"      # For generating initial conditions
+indicatif = "0.17" # Progress bars for long simulations
