@@ -135,6 +135,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .action(clap::ArgAction::SetTrue)
                 )
                 .arg(
+                    Arg::new("list_gpus")
+                        .long("list-gpus")
+                        .help("List available GPUs and exit")
+                        .action(clap::ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("select_gpu")
+                        .long("select-gpu")
+                        .help("Select a specific GPU by name fragment (case-insensitive)")
+                        .value_name("NAME")
+                )
+                .arg(
                     Arg::new("radius_min")
                         .long("rmin")
                         .value_name("RADIUS_MIN")
@@ -332,6 +344,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Handle parameter study
     else if let Some(matches) = matches.subcommand_matches("study") {
+        // If list-gpus flag is set, list available GPUs and exit
+        if matches.get_flag("list_gpus") {
+            println!("Listing available GPUs...");
+            let gpus = pollster::block_on(async { ComputeCore::list_available_gpus().await });
+            
+            if gpus.is_empty() {
+                println!("No compatible GPUs found!");
+            } else {
+                println!("Available GPUs:");
+                for (i, (name, device_type, compatibility)) in gpus.iter().enumerate() {
+                    println!("  {}: {} ({}) - {}", i, name, 
+                        match device_type {
+                            wgpu::DeviceType::DiscreteGpu => "Discrete",
+                            wgpu::DeviceType::IntegratedGpu => "Integrated",
+                            wgpu::DeviceType::Cpu => "CPU",
+                            wgpu::DeviceType::Other => "Other",
+                            _ => "Unknown",
+                        },
+                        compatibility
+                    );
+                }
+            }
+            return Ok(());
+        }
+
         let radius_min = matches.get_one::<String>("radius_min").unwrap().parse::<f64>()?;
         let radius_max = matches.get_one::<String>("radius_max").unwrap().parse::<f64>()?;
         let radius_steps = matches.get_one::<String>("radius_steps").unwrap().parse::<usize>()?;
@@ -342,6 +379,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         let steps = matches.get_one::<String>("sim_steps").unwrap().parse::<usize>()?;
         let output_dir = matches.get_one::<String>("output_dir").unwrap();
+        let use_gpu = matches.get_flag("gpu");
+        let selected_gpu = matches.get_one::<String>("select_gpu").map(|s| s.as_str());
+        
+        // Process external field parameters
+        let external_field = simulation::parse_external_field(
+            matches.get_one::<String>("ext_field").unwrap(),
+            matches.get_one::<String>("ext_value").unwrap(),
+            matches.get_one::<String>("ext_center").unwrap(),
+            matches.get_one::<String>("ext_freq").unwrap().parse::<f64>()?,
+            matches.get_one::<String>("ext_phase").unwrap().parse::<f64>()?,
+        )?;
         
         // Create output directory if it doesn't exist
         if !Path::new(output_dir).exists() {
@@ -354,9 +402,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Temperature range: {} to {} K ({} steps)", temp_min, temp_max, temp_steps);
         println!("  Kelvin wave amplitude: {}", wave_amplitude);
         println!("  Simulation steps: {}", steps);
+        if let Some(field) = &external_field {
+            println!("  External field: {:?}", field);
+        }
+        println!("  Using GPU: {}", use_gpu);
         println!("  Output directory: {}", output_dir);
         
-        // Run the parameter study
+        // Initialize GPU compute core if requested
+        let compute_core = if use_gpu {
+            println!("Initializing GPU...");
+            Some(pollster::block_on(async {
+                if let Some(gpu_name) = selected_gpu {
+                    ComputeCore::new_with_device_preference(Some(gpu_name)).await
+                } else {
+                    ComputeCore::new().await
+                }
+            }))
+        } else {
+            None
+        };
+        
+        // Run the parameter study with GPU if selected
         let results = run_parameter_study(
             height / 2.0, // base_radius (not used directly in sweep)
             height,
@@ -366,6 +432,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             wave_amplitude,
             steps,
             output_dir,
+            compute_core,
+            external_field,
         );
         
         // Save summary results

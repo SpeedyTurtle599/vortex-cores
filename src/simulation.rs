@@ -844,52 +844,80 @@ impl VortexSimulation {
 
 pub fn run_parameter_study(
     base_radius: f64,
-    base_height: f64,
+    height: f64,
     base_temperature: f64,
-    radius_range: (f64, f64, usize),       // (min, max, steps)
-    temperature_range: (f64, f64, usize),  // (min, max, steps)
+    radius_range: (f64, f64, usize),
+    temp_range: (f64, f64, usize),
     wave_amplitude: f64,
     steps: usize,
     output_dir: &str,
+    compute_core: Option<ComputeCore>,
+    external_field: Option<ExternalFieldParams>,
 ) -> Vec<SimulationResult> {
+    let (radius_min, radius_max, radius_steps) = radius_range;
+    let (temp_min, temp_max, temp_steps) = temp_range;
+    
+    let radius_values = generate_parameter_range(radius_min, radius_max, radius_steps);
+    let temp_values = generate_parameter_range(temp_min, temp_max, temp_steps);
+    
+    let total_runs = radius_values.len() * temp_values.len();
+    println!("Running {} simulations in total", total_runs);
+    
     let mut results = Vec::new();
+    let mut run_count = 0;
     
-    let radii = generate_parameter_range(radius_range.0, radius_range.1, radius_range.2);
-    let temperatures = generate_parameter_range(temperature_range.0, temperature_range.1, temperature_range.2);
-    
-    let total_runs = radii.len() * temperatures.len();
-    println!("Running parameter study with {} total configurations", total_runs);
-    
+    // Create progress bar
     let progress_bar = ProgressBar::new(total_runs as u64);
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) {msg}")
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
             .unwrap()
-            .progress_chars("#>-")
+            .progress_chars("#>-"),
     );
     
-    for (i, &radius) in radii.iter().enumerate() {
-        for (j, &temperature) in temperatures.iter().enumerate() {
-            let config_name = format!("R{:.2}_T{:.2}", radius, temperature);
-            progress_bar.set_message(format!("Running configuration {}", config_name));
+    // Reuse compute core across simulations if provided
+    let shared_compute_core = compute_core;
+    
+    for radius in &radius_values {
+        for temp in &temp_values {
+            run_count += 1;
+            progress_bar.set_message(format!(
+                "Radius: {:.2} cm, Temp: {:.2} K", radius, temp));
             
-            // Create and run simulation with these parameters
-            let mut sim = VortexSimulation::new(radius, base_height, temperature);
+            // Create simulation with optional GPU core
+            let mut sim = if let Some(ref core) = shared_compute_core {
+                let cloned_core = core.clone();
+                VortexSimulation::new_with_compute_core(*radius, height, *temp, cloned_core)
+            } else {
+                VortexSimulation::new(*radius, height, *temp)
+            };
+            
+            // Add external field if provided
+            if let Some(ref field) = external_field {
+                sim.external_field = Some(field.clone());
+            }
+            
+            // Add Kelvin waves and run simulation
             if wave_amplitude > 0.0 {
                 sim.add_kelvin_waves(wave_amplitude * sim.radius, 3.0);
             }
+            
             sim.run(steps);
             
-            // Save results
-            let output_file = format!("{}/{}_{}.vtk", output_dir, i, j);
+            // Save individual result
+            let output_file = format!("{}/sim_r{:.2}_t{:.2}.vtk", 
+                                     output_dir, radius, temp);
             sim.save_results(&output_file);
             
-            // Collect key metrics
+            // Collect metrics
             let result = SimulationResult {
-                radius,
-                temperature, 
-                final_length: *sim.stats.total_length.last().unwrap_or(&0.0),
-                final_energy: *sim.stats.kinetic_energy.last().unwrap_or(&0.0),
+                radius: *radius,
+                height,
+                temperature: *temp,
+                wave_amplitude,
+                steps,
+                total_length: sim.stats.total_length.last().copied().unwrap_or(0.0),
+                energy: sim.stats.kinetic_energy.last().copied().unwrap_or(0.0),
                 reconnection_count: sim.stats.reconnection_count,
             };
             
@@ -898,7 +926,7 @@ pub fn run_parameter_study(
         }
     }
     
-    progress_bar.finish();
+    progress_bar.finish_with_message("Parameter study complete!");
     results
 }
 
@@ -976,8 +1004,11 @@ pub fn parse_external_field(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub radius: f64,
+    pub height: f64,
     pub temperature: f64,
-    pub final_length: f64,
-    pub final_energy: f64,
+    pub wave_amplitude: f64,
+    pub steps: usize,
+    pub total_length: f64,
+    pub energy: f64,
     pub reconnection_count: usize,
 }
