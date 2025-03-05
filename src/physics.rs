@@ -548,14 +548,14 @@ pub fn process_reconnections(
         return;
     }
     
-    // Sort by distance (assuming the 5th element is distance)
-    // This allows us to process closest reconnections first
-    // Note: GPU may have already sorted these
+    // Debug output
+    println!("Processing {} reconnection candidates", reconnection_candidates.len());
     
     // Process each reconnection candidate
     for (line_idx1, point_idx1, line_idx2, point_idx2) in reconnection_candidates {
         // Skip if indices are no longer valid due to previous reconnections
         if line_idx1 >= vortex_lines.len() || line_idx2 >= vortex_lines.len() {
+            println!("Skip: Line indices out of bounds ({}, {})", line_idx1, line_idx2);
             continue;
         }
         
@@ -563,15 +563,54 @@ pub fn process_reconnections(
         let line2_len = vortex_lines[line_idx2].points.len();
         
         if point_idx1 >= line1_len || point_idx2 >= line2_len {
+            println!("Skip: Point indices out of bounds ({}/{}, {}/{})", 
+                     point_idx1, line1_len, point_idx2, line2_len);
             continue;
         }
         
-        // Perform the actual reconnection using the existing function
-        reconnect_vortex_lines(vortex_lines, line_idx1, point_idx1, line_idx2, point_idx2);
+        // Double-check distance and angle criteria to confirm reconnection
+        let p1 = Vector3::new(
+            vortex_lines[line_idx1].points[point_idx1].position[0],
+            vortex_lines[line_idx1].points[point_idx1].position[1],
+            vortex_lines[line_idx1].points[point_idx1].position[2]
+        );
+        
+        let p2 = Vector3::new(
+            vortex_lines[line_idx2].points[point_idx2].position[0],
+            vortex_lines[line_idx2].points[point_idx2].position[1],
+            vortex_lines[line_idx2].points[point_idx2].position[2]
+        );
+        
+        let t1 = Vector3::new(
+            vortex_lines[line_idx1].points[point_idx1].tangent[0],
+            vortex_lines[line_idx1].points[point_idx1].tangent[1],
+            vortex_lines[line_idx1].points[point_idx1].tangent[2]
+        );
+        
+        let t2 = Vector3::new(
+            vortex_lines[line_idx2].points[point_idx2].tangent[0],
+            vortex_lines[line_idx2].points[point_idx2].tangent[1],
+            vortex_lines[line_idx2].points[point_idx2].tangent[2]
+        );
+        
+        // Recalculate distance and dot product
+        let dist = (p1 - p2).norm();
+        let dot = t1.dot(&t2);
+        
+        println!("Reconnection candidate: dist={:.4}, dot={:.4}", dist, dot);
+        
+        // Only perform reconnection if tangents are anti-parallel (dot product negative)
+        // and points are close enough
+        let reconnection_threshold = 0.01; // Should match your threshold from calling code
+        if dist < reconnection_threshold && dot < -0.3 {
+            // Perform the actual reconnection
+            reconnect_vortex_lines(vortex_lines, line_idx1, point_idx1, line_idx2, point_idx2);
+            println!("Performed reconnection between lines {} and {}", line_idx1, line_idx2);
+        } else {
+            println!("Skipping reconnection: conditions not met (need dist<{:.4} and dot<-0.3)", 
+                     reconnection_threshold);
+        }
     }
-    
-    // Clean up after reconnections
-    validate_vortex_lines(vortex_lines);
 }
 
 // Validate vortex lines and remove any degenerate elements
@@ -632,7 +671,7 @@ fn reconnect_vortex_lines(
     j: usize,
     pj: usize,
 ) {
-    // Safety check - make sure indices are valid
+    // Safety checks - make sure indices are valid
     if i >= vortex_lines.len() || j >= vortex_lines.len() {
         eprintln!("Warning: Invalid line indices in reconnection: {} and {}", i, j);
         return;
@@ -643,9 +682,9 @@ fn reconnect_vortex_lines(
         return;
     }
 
-    // Create four new segments from the two original lines
-    let line_i = vortex_lines.remove(if i > j { i } else { i });
-    let line_j = vortex_lines.remove(if i > j { j } else { j - 1 });
+    // Clone the lines before modifying their contents
+    let line_i = vortex_lines[i].clone();
+    let line_j = vortex_lines[j].clone();
 
     // Split first line at pi
     let (mut segment1a, mut segment1b) = split_line_at(&line_i, pi);
@@ -654,24 +693,42 @@ fn reconnect_vortex_lines(
     let (mut segment2a, mut segment2b) = split_line_at(&line_j, pj);
 
     // Only add new lines if they have sufficient points
-    // This prevents degenerate lines that could cause issues
     let min_points = 4; // Require at least 4 points for stability
     
-    // Reconnect: segment1a + segment2b, segment2a + segment1b
+    // Create the new reconnected lines
+    let mut new_line1 = None;
+    let mut new_line2 = None;
+    
+    // Reconnect: segment1a + segment2b
     if segment1a.points.len() >= min_points && segment2b.points.len() >= min_points {
-        let mut new_line1 = VortexLine { points: Vec::new() };
-        new_line1.points.append(&mut segment1a.points);
-        new_line1.points.append(&mut segment2b.points);
-        update_tangent_vectors(&mut new_line1);
-        vortex_lines.push(new_line1);
+        let mut new_line = VortexLine { points: Vec::new() };
+        new_line.points.append(&mut segment1a.points);
+        new_line.points.append(&mut segment2b.points);
+        update_tangent_vectors(&mut new_line);
+        new_line1 = Some(new_line);
     }
 
+    // Reconnect: segment2a + segment1b
     if segment2a.points.len() >= min_points && segment1b.points.len() >= min_points {
-        let mut new_line2 = VortexLine { points: Vec::new() };
-        new_line2.points.append(&mut segment2a.points);
-        new_line2.points.append(&mut segment1b.points);
-        update_tangent_vectors(&mut new_line2);
-        vortex_lines.push(new_line2);
+        let mut new_line = VortexLine { points: Vec::new() };
+        new_line.points.append(&mut segment2a.points);
+        new_line.points.append(&mut segment1b.points);
+        update_tangent_vectors(&mut new_line);
+        new_line2 = Some(new_line);
+    }
+
+    // Remove the original lines in reverse order
+    let (low_idx, high_idx) = if i < j { (i, j) } else { (j, i) };
+    vortex_lines.remove(high_idx);
+    vortex_lines.remove(low_idx);
+    
+    // Add the new lines
+    if let Some(line) = new_line1 {
+        vortex_lines.push(line);
+    }
+    
+    if let Some(line) = new_line2 {
+        vortex_lines.push(line);
     }
 }
 

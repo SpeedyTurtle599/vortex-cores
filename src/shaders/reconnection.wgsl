@@ -21,6 +21,7 @@ struct ReconnectionCandidate {
     line_idx2: u32,
     point_idx2: u32,
     distance: f32,
+    dot_product: f32,
     padding: vec3<f32>,
 }
 
@@ -74,15 +75,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pos1 = current_point.position.xyz;
     let tangent1 = current_point.tangent.xyz;
     
-    // Find the next point on this line for segment tangent
-    let line_offset1 = line_offsets[line_idx1];
-    let next_idx1 = line_offset1.start_idx + ((local_idx1 + 1u) % line_offset1.point_count);
-    let next_point1 = all_points[next_idx1].position.xyz;
-    
-    // Calculate segment tangent
-    let segment1 = normalize(next_point1 - pos1);
-    
-    // Check all other segments on other lines
+    // Check all points on other lines
     for (var j = line_idx1 + 1u; j < arrayLength(&line_offsets); j++) {
         let line_offset2 = line_offsets[j];
         
@@ -99,15 +92,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 continue;
             }
             
-            // Get next point on line2
-            let next_idx2 = line_offset2.start_idx + ((k + 1u) % line_offset2.point_count);
-            let next_point2 = all_points[next_idx2].position.xyz;
+            // Get tangent vectors for both points
+            let tangent2 = all_points[point_idx2].tangent.xyz;
             
-            // Calculate segment tangent
-            let segment2 = normalize(next_point2 - pos2);
-            
-            // Check if segments are anti-parallel (tangents pointing in opposite directions)
-            let dot_product = dot(segment1, segment2);
+            // Check if tangents are anti-parallel (dot product negative)
+            let dot_product = dot(tangent1, tangent2);
             
             if (dot_product < -0.3) { // Same threshold as in CPU code
                 // Found a potential reconnection
@@ -116,12 +105,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 // Make sure we don't exceed buffer size
                 if (count < params.max_candidates) {
                     candidates[count] = ReconnectionCandidate(
-                    line_idx1, 
-                    local_idx1,
-                    j, 
-                    k,
-                    dist, 
-                    vec3<f32>(0.0)
+                        line_idx1, 
+                        local_idx1,
+                        j, 
+                        k,
+                        dist, 
+                        dot_product,
+                        vec3<f32>(0.0)
                     );
                 }
             }

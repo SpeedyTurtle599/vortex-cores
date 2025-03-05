@@ -22,6 +22,7 @@ struct ReconnectionCandidate {
     line_idx2: u32,
     point_idx2: u32,
     distance: f32,
+    dot_product: f32,
     padding: [f32; 3],
 }
 
@@ -485,7 +486,6 @@ impl ComputeCore {
     ) -> Vec<(usize, usize, usize, usize)> {
         // Convert vortex data to GPU-friendly format
         let (points_data, line_offsets) = self.prepare_vortex_data(vortex_lines);
-        let total_points = points_data.len();
         
         // Create buffers
         let input_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -673,12 +673,10 @@ impl ComputeCore {
             compute_pass.set_pipeline(&compute_pipeline);
             compute_pass.set_bind_group(0, &bind_group, &[]);
             
-            // Dispatch enough workgroups to process all line pairs
-            let num_lines = vortex_lines.len();
-            let workgroup_count = ((num_lines * (num_lines - 1) / 2) as f64 / 256.0).ceil() as u32;
-            if workgroup_count > 0 {
-                compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-            }
+            // Dispatch enough workgroups to process total number of points
+            let total_points = points_data.len();
+            let workgroup_count = ((total_points as f64) / 256.0).ceil() as u32;
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         
         // Create staging buffer to read results
@@ -725,17 +723,31 @@ impl ComputeCore {
                 .copied()
                 .collect();
             
-            // Convert to result format and sort by distance (closest first)
+            // Convert to result format and apply both distance and dot product filters
             let mut result: Vec<(usize, usize, usize, usize)> = candidates.iter()
-                .filter(|c| c.distance > 0.0 && c.distance < threshold as f32)
-                .map(|c| (
+            .filter(|c| {
+                // Apply both distance and dot product filters
+                c.distance > 0.0 && 
+                c.distance < threshold as f32 && 
+                c.dot_product < -0.3
+            })
+            .map(|c| {
+                (
                     c.line_idx1 as usize,
                     c.point_idx1 as usize,
                     c.line_idx2 as usize,
                     c.point_idx2 as usize
-                ))
-                .collect();
+                )
+            })
+            .collect();
             
+                if !result.is_empty() {
+                    println!("GPU detected {} potential reconnections", result.len());
+                    for (i, (l1, p1, l2, p2)) in result.iter().enumerate().take(5) {
+                        println!("  Candidate {}: Line {} point {} with Line {} point {}", i+1, l1, p1, l2, p2);
+                    }
+                }
+
             result.sort_unstable_by(|a, b| b.cmp(a)); // Sort in reverse order
             result
         } else {

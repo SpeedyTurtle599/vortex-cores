@@ -282,7 +282,7 @@ impl VortexSimulation {
             self.add_kelvin_waves(amplitude, wavenumber);
         }
         
-        progress_bar.set_message(format!("Starting simulation with {} vortex lines", self.vortex_lines.len()));
+        progress_bar.set_message(format!("Running simulation with {} vortex lines", self.vortex_lines.len()));
         
         // Time evolution loop
         let dt = 0.001; // time step
@@ -354,6 +354,10 @@ impl VortexSimulation {
                 &self.vortex_lines, 
                 reconnection_threshold
             );
+
+            progress_bar.set_message(format!(
+                "Found {} reconnection candidates", 
+                reconnection_candidates.len()));
             
             if !reconnection_candidates.is_empty() {
                 // Process the GPU-detected reconnection points
