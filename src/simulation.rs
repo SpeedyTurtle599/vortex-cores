@@ -25,6 +25,7 @@ pub struct VortexLine {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VortexSimulation {
     compute_core: Option<ComputeCore>,
+    using_gpu: bool,
     pub radius: f64,
     pub height: f64,
     pub temperature: f64,
@@ -66,6 +67,7 @@ impl VortexSimulation {
     pub fn new(radius: f64, height: f64, temperature: f64) -> Self {
         VortexSimulation {
             compute_core: None,
+            using_gpu: false,
             radius,
             height,
             temperature,
@@ -79,22 +81,20 @@ impl VortexSimulation {
     pub async fn new_with_gpu(radius: f64, height: f64, temperature: f64) -> Self {
         let mut sim = Self::new(radius, height, temperature);
         sim.compute_core = Some(ComputeCore::new().await);
+        sim.using_gpu = true; // Set to true when GPU is initialized
         sim
     }
 
     pub fn new_with_compute_core(radius: f64, height: f64, temperature: f64, compute_core: ComputeCore) -> Self {
         let mut sim = Self::new(radius, height, temperature);
         sim.compute_core = Some(compute_core);
+        sim.using_gpu = true; // Set to true when GPU is initialized
         sim
-    }
-
-    pub fn with_compute_core(mut self, compute_core: ComputeCore) -> Self {
-        self.compute_core = Some(compute_core);
-        self
     }
 
     pub fn set_compute_core(&mut self, compute_core: ComputeCore) {
         self.compute_core = Some(compute_core);
+        self.using_gpu = true; // Set to true when GPU is initialized
     }
     
     fn get_external_field(&self) -> Option<ExternalField> {
@@ -377,19 +377,34 @@ impl VortexSimulation {
         }
     }
     
-    // Inside VortexSimulation impl
     fn evolve_vortices(&mut self, dt: f64) {
         // Get external field for this time step
         let ext_field = self.get_external_field();
         
-        // Add thermal fluctuations if temperature > 0
-        if self.temperature > 0.01 {
-            self.add_thermal_fluctuations(dt);
-        }
-        
         // Check if we have a GPU compute core
-        if let Some(compute_core) = &self.compute_core {
-            // Use GPU for velocity calculations
+        if self.using_gpu && self.compute_core.is_some() {
+            let compute_core = self.compute_core.as_ref().unwrap();
+            
+            // 1. GPU-accelerated thermal fluctuations if temperature > 0
+            if self.temperature > 0.01 {
+                let fluctuations = compute_core.calculate_thermal_fluctuations(
+                    &self.vortex_lines,
+                    self.temperature,
+                    dt
+                );
+                
+                // Apply fluctuations
+                for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
+                    for (point_idx, point) in line.points.iter_mut().enumerate() {
+                        let fluct = &fluctuations[line_idx][point_idx];
+                        point.position[0] += fluct[0];
+                        point.position[1] += fluct[1];
+                        point.position[2] += fluct[2];
+                    }
+                }
+            }
+            
+            // 2. GPU-accelerated velocity calculation
             let velocities = compute_core.calculate_velocities(
                 &self.vortex_lines, 
                 self.temperature,
@@ -399,7 +414,7 @@ impl VortexSimulation {
                 self.external_field.as_ref()
             );
             
-            // Apply velocities to evolve vortex positions
+            // Apply velocities
             for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
                 for (point_idx, point) in line.points.iter_mut().enumerate() {
                     let velocity = &velocities[line_idx][point_idx];
@@ -409,7 +424,10 @@ impl VortexSimulation {
                 }
             }
         } else {
-            // Fall back to CPU calculations
+            // Add thermal fluctuations if temperature > 0
+            if self.temperature > 0.01 {
+                self.add_thermal_fluctuations(dt);
+            }
             physics::evolve_vortex_network(
                 &mut self.vortex_lines, 
                 dt, 
@@ -425,62 +443,81 @@ impl VortexSimulation {
         if self.temperature < 0.01 {
             return;
         }
-        
-        // Get Hall-Vinen mutual friction coefficients
-        let (alpha, alpha_prime) = physics::mutual_friction_coefficients(self.temperature);
-        
-        // Temperature-dependent noise amplitude with more physical basis
-        let noise_amplitude = 1e-4 * (self.temperature / 2.17).sqrt() * dt.sqrt() * alpha;
-        let mut rng = rand::rng();
-        
-        // First, calculate velocities for all lines ahead of time
-        // This avoids the borrowing conflict
-        let mut all_velocities = Vec::with_capacity(self.vortex_lines.len());
-        
-        for line in &self.vortex_lines {
-            let velocities = physics::calculate_local_velocities(line, &self.vortex_lines);
-            all_velocities.push(velocities);
-        }
-        
-        // Now apply the fluctuations using pre-calculated velocities
-        for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
-            let velocities = &all_velocities[line_idx];
+        if self.using_gpu && self.compute_core.is_some() {
+            // Use GPU implementation
+            let compute_core = self.compute_core.as_ref().unwrap();
+            let fluctuations = compute_core.calculate_thermal_fluctuations(
+                &self.vortex_lines,
+                self.temperature,
+                dt
+            );
             
-            for (i, point) in line.points.iter_mut().enumerate() {
-                // Get local velocity components
-                let v_sl = velocities.get(i).unwrap_or(&Vector3::zeros()).clone();
-                
-                // Apply mutual friction
-                let tangent = Vector3::new(point.tangent[0], point.tangent[1], point.tangent[2]);
-                let v_sl_perp = v_sl - tangent * v_sl.dot(&tangent);
-                
-                // Apply temperature-dependent friction
-                let friction = alpha * v_sl_perp.cross(&tangent) + alpha_prime * v_sl_perp;
-                
-                // Create random vector with physically correct distribution
-                let random_vec = Vector3::new(
-                    rng.random::<f64>() * 2.0 - 1.0, // Use gen instead of random
-                    rng.random::<f64>() * 2.0 - 1.0,
-                    rng.random::<f64>() * 2.0 - 1.0
-                );
-                
-                // Project random vector to be perpendicular to tangent
-                let dot = random_vec.dot(&tangent);
-                let perpendicular = random_vec - tangent * dot;
-                
-                // Normalize and scale by noise amplitude
-                let noise = perpendicular.normalize() * noise_amplitude;
-                
-                // Apply both deterministic friction and random fluctuations
-                point.position[0] += (friction.x + noise.x) * dt;
-                point.position[1] += (friction.y + noise.y) * dt;
-                point.position[2] += (friction.z + noise.z) * dt;
+            // Apply the GPU-calculated fluctuations to vortex positions
+            for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
+                for (point_idx, point) in line.points.iter_mut().enumerate() {
+                    let fluct = &fluctuations[line_idx][point_idx];
+                    point.position[0] += fluct[0];
+                    point.position[1] += fluct[1];
+                    point.position[2] += fluct[2];
+                }
             }
-        }
-        
-        // Update tangent vectors after applying noise
-        for line in &mut self.vortex_lines {
-            physics::update_tangent_vectors(line);
+        } else {
+            // Get Hall-Vinen mutual friction coefficients
+            let (alpha, alpha_prime) = physics::mutual_friction_coefficients(self.temperature);
+            
+            // Temperature-dependent noise amplitude with more physical basis
+            let noise_amplitude = 1e-4 * (self.temperature / 2.17).sqrt() * dt.sqrt() * alpha;
+            let mut rng = rand::rng();
+            
+            // First, calculate velocities for all lines ahead of time
+            // This avoids the borrowing conflict
+            let mut all_velocities = Vec::with_capacity(self.vortex_lines.len());
+            
+            for line in &self.vortex_lines {
+                let velocities = physics::calculate_local_velocities(line, &self.vortex_lines);
+                all_velocities.push(velocities);
+            }
+            
+            // Now apply the fluctuations using pre-calculated velocities
+            for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
+                let velocities = &all_velocities[line_idx];
+                
+                for (i, point) in line.points.iter_mut().enumerate() {
+                    // Get local velocity components
+                    let v_sl = velocities.get(i).unwrap_or(&Vector3::zeros()).clone();
+                    
+                    // Apply mutual friction
+                    let tangent = Vector3::new(point.tangent[0], point.tangent[1], point.tangent[2]);
+                    let v_sl_perp = v_sl - tangent * v_sl.dot(&tangent);
+                    
+                    // Apply temperature-dependent friction
+                    let friction = alpha * v_sl_perp.cross(&tangent) + alpha_prime * v_sl_perp;
+                    
+                    // Create random vector with physically correct distribution
+                    let random_vec = Vector3::new(
+                        rng.random::<f64>() * 2.0 - 1.0, // Use gen instead of random
+                        rng.random::<f64>() * 2.0 - 1.0,
+                        rng.random::<f64>() * 2.0 - 1.0
+                    );
+                    
+                    // Project random vector to be perpendicular to tangent
+                    let dot = random_vec.dot(&tangent);
+                    let perpendicular = random_vec - tangent * dot;
+                    
+                    // Normalize and scale by noise amplitude
+                    let noise = perpendicular.normalize() * noise_amplitude;
+                    
+                    // Apply both deterministic friction and random fluctuations
+                    point.position[0] += (friction.x + noise.x) * dt;
+                    point.position[1] += (friction.y + noise.y) * dt;
+                    point.position[2] += (friction.z + noise.z) * dt;
+                }
+            }
+            
+            // Update tangent vectors after applying noise
+            for line in &mut self.vortex_lines {
+                physics::update_tangent_vectors(line);
+            }
         }
     }
     
@@ -489,8 +526,20 @@ impl VortexSimulation {
         let min_spacing = target_spacing * 0.5;
         let max_spacing = target_spacing * 2.0;
         
-        for line in &mut self.vortex_lines {
-            physics::remesh_vortex_line(line, target_spacing, min_spacing, max_spacing);
+        if self.using_gpu && self.compute_core.is_some() {
+            // Use GPU for remeshing
+            let compute_core = self.compute_core.as_ref().unwrap();
+            self.vortex_lines = compute_core.remesh_vortices_gpu(
+                &self.vortex_lines,
+                target_spacing,
+                min_spacing,
+                max_spacing
+            );
+        } else {
+            // Existing CPU implementation
+            for line in &mut self.vortex_lines {
+                physics::remesh_vortex_line(line, target_spacing, min_spacing, max_spacing);
+            }
         }
     }
     
@@ -499,8 +548,28 @@ impl VortexSimulation {
         let previous_line_count = self.vortex_lines.len();
         let previous_total_length = physics::calculate_total_length(&self.vortex_lines);
         
-        // The function may not return reconnection count, so we need to check before and after
-        physics::handle_reconnections(&mut self.vortex_lines, reconnection_threshold);
+        if self.using_gpu && self.compute_core.is_some() {
+            // Use GPU for detecting potential reconnection points
+            let compute_core = self.compute_core.as_ref().unwrap();
+            let reconnection_candidates = compute_core.detect_reconnections(
+                &self.vortex_lines, 
+                reconnection_threshold
+            );
+            
+            if !reconnection_candidates.is_empty() {
+                // Process the GPU-detected reconnection points
+                physics::process_reconnections(&mut self.vortex_lines, reconnection_candidates);
+                
+                // Count as a reconnection event
+                self.stats.reconnection_count += 1;
+                
+                // After reconnection, remove tiny loops and update line data
+                physics::remove_tiny_loops(&mut self.vortex_lines, 0.005 * self.radius);
+            }
+        } else {
+            // Existing CPU implementation
+            physics::handle_reconnections(&mut self.vortex_lines, reconnection_threshold);
+        }
         
         // After reconnection, check if line count or length changed significantly
         let current_line_count = self.vortex_lines.len();
@@ -510,15 +579,10 @@ impl VortexSimulation {
         let length_reduced = (previous_total_length - current_total_length) > 0.001;
         
         if line_count_changed || length_reduced {
-            // A reconnection likely happened
-            self.stats.reconnection_count += 1;
             println!(
-                "Reconnection detected at time={:.4}: Lines: {} → {}, Length: {:.4} → {:.4}",
-                self.time,
-                previous_line_count,
-                current_line_count,
-                previous_total_length,
-                current_total_length
+                "Reconnection detected at t={:.3}s: Lines {} -> {}, Length {:.3} -> {:.3}",
+                self.time, previous_line_count, current_line_count,
+                previous_total_length, current_total_length
             );
         }
     }

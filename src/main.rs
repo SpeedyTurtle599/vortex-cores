@@ -18,265 +18,205 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .about("Simulates quantum vortex dynamics in superfluid helium")
         .subcommand(
             Command::new("single")
-                .about("Run a single simulation with specified parameters")
-                .arg(
-                    Arg::new("checkpoint")
-                        .required(false)
-                        .help("Path to checkpoint file")
-                        .index(1)
-                )
-                .arg(
-                    Arg::new("load_checkpoint")
-                        .long("load-checkpoint")
-                        .value_name("CHECKPOINT_FILE")
-                        .help("Load simulation state from checkpoint file")
-                )
-                .arg(
-                    Arg::new("gpu")
-                        .short('g')
-                        .long("gpu")
-                        .help("Use GPU for computation")
-                        .action(clap::ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("list_gpus")
-                        .long("list-gpus")
-                        .help("List available GPUs and exit")
-                        .action(clap::ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("select_gpu")
-                        .long("select-gpu")
-                        .help("Select a specific GPU by name fragment (case-insensitive)")
-                        .value_name("NAME")
-                )
-                .arg(
-                    Arg::new("radius")
-                        .short('r')
-                        .long("radius")
-                        .value_name("RADIUS")
-                        .help("Cylinder radius in cm")
-                        .default_value("0.5"),
-                )
-                .arg(
-                    Arg::new("height")
-                        .short('H')
-                        .long("height")
-                        .value_name("HEIGHT")
-                        .help("Cylinder height in cm")
-                        .default_value("1.0"),
-                )
-                .arg(
-                    Arg::new("temperature")
-                        .short('t')
-                        .long("temp")
-                        .value_name("TEMP")
-                        .help("Temperature in Kelvin")
-                        .default_value("1.5"),
-                )
-                .arg(
-                    Arg::new("waves")
-                        .short('w')
-                        .long("waves")
-                        .value_name("AMPLITUDE")
-                        .help("Kelvin wave amplitude factor (0.0-1.0)")
-                        .default_value("0.1")
-                )
-                .arg(
-                    Arg::new("ext_field")
-                        .short('e')
-                        .long("ext-field")
-                        .value_name("TYPE")
-                        .help("External field type (none, rotation, uniform, oscillatory, counterflow)")
-                        .default_value("none")
-                )
-                .arg(
-                    Arg::new("ext_value")
-                        .long("ext-value")
-                        .value_name("VALUE")
-                        .help("External field value (format depends on field type)")
-                        .default_value("0.0,0.0,0.0")
-                )
-                .arg(
-                    Arg::new("ext_center")
-                        .long("ext-center")
-                        .value_name("CENTER")
-                        .help("Center point for rotation field (x,y,z)")
-                        .default_value("0.0,0.0,0.0")
-                )
-                .arg(
-                    Arg::new("ext_freq")
-                        .long("ext-freq")
-                        .value_name("FREQ")
-                        .help("Frequency for oscillatory flow (Hz)")
-                        .default_value("1.0")
-                )
-                .arg(
-                    Arg::new("ext_phase")
-                        .long("ext-phase")
-                        .value_name("PHASE")
-                        .help("Phase for oscillatory flow (radians)")
-                        .default_value("0.0")
-                )
-                .arg(
-                    Arg::new("steps")
-                        .short('s')
-                        .long("steps")
-                        .value_name("STEPS")
-                        .help("Number of simulation steps")
-                        .default_value("1000"),
-                )
-                .arg(
-                    Arg::new("output")
-                        .short('o')
-                        .long("output")
-                        .value_name("FILE")
-                        .help("Output file name")
-                        .default_value("output.vtk"),
-                )
+                .about("Run a single simulation")
+                .arg(Arg::new("gpu")
+                    .long("gpu")
+                    .help("Use GPU acceleration")
+                    .action(clap::ArgAction::SetTrue))
+                .arg(Arg::new("list_gpus")
+                    .long("list-gpus")
+                    .help("List available GPUs")
+                    .action(clap::ArgAction::SetTrue))
+                .arg(Arg::new("select_gpu")
+                    .long("select-gpu")
+                    .help("Select specific GPU by name fragment")
+                    .value_name("NAME")
+                    .value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("steps")
+                    .short('s')
+                    .long("steps")
+                    .help("Number of simulation steps")
+                    .value_name("STEPS")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("1000"))
+                .arg(Arg::new("output")
+                    .short('o')
+                    .long("output")
+                    .help("Output file path")
+                    .value_name("FILE")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("output.vtk"))
+                .arg(Arg::new("load_checkpoint")
+                    .short('l')
+                    .long("load")
+                    .help("Load from checkpoint file")
+                    .value_name("FILE")
+                    .value_parser(clap::value_parser!(String)))
+                    .arg(Arg::new("radius")
+                    .long("radius")
+                    .short('r')
+                    .help("Container radius in cm")
+                    .value_name("RADIUS")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("1.0"))
+                .arg(Arg::new("height")
+                    .long("height")
+                    .short('H')
+                    .help("Container height in cm")
+                    .value_name("HEIGHT")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("2.0"))
+                .arg(Arg::new("temperature")
+                    .long("temp")
+                    .short('t')
+                    .help("Temperature in Kelvin")
+                    .value_name("TEMP")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("1.5"))
+                .arg(Arg::new("ext_field")
+                    .short('f')
+                    .long("ext-field")
+                    .help("External field type: none, rotation, uniform, oscillatory, counterflow")
+                    .value_name("TYPE")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("none"))
+                .arg(Arg::new("field_value")
+                    .short('v')
+                    .long("ext-value")
+                    .help("External field value (e.g. '0,0,1' for rotation)")
+                    .value_name("VALUE")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("0,0,0"))
+                .arg(Arg::new("field_center")
+                    .short('c')
+                    .long("ext-center")
+                    .help("Field center for rotation (e.g. '0,0,0')")
+                    .value_name("CENTER")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("0,0,0"))
+                .arg(Arg::new("frequency")
+                    .long("ext-freq")
+                    .help("Frequency for oscillatory field (Hz)")
+                    .value_name("FREQ")
+                    .value_parser(clap::value_parser!(f64))
+                    .default_value("1.0"))
+                .arg(Arg::new("phase")
+                    .long("ext-phase")
+                    .help("Phase for oscillatory field (radians)")
+                    .value_name("PHASE")
+                    .value_parser(clap::value_parser!(f64))
+                    .default_value("0.0"))
+                .arg(Arg::new("waves")
+                    .short('w')
+                    .long("waves")
+                    .help("Add Kelvin waves with given amplitude")
+                    .value_name("AMPLITUDE")
+                    .value_parser(clap::value_parser!(String))
+                    .default_value("0.0"))
+        )
+        .subcommand(
+            Command::new("resume")
+                .about("Resume from checkpoint")
+                .arg(Arg::new("gpu")
+                    .long("gpu")
+                    .help("Use GPU acceleration")
+                    .action(clap::ArgAction::SetTrue))
+                .arg(Arg::new("select_gpu")
+                    .long("select-gpu")
+                    .help("Select specific GPU by name fragment")
+                    .value_name("NAME"))
+                .arg(Arg::new("checkpoint")
+                    .required(true)
+                    .help("Checkpoint file to resume from")
+                    .value_name("FILE"))
+                .arg(Arg::new("steps")
+                    .short('s')
+                    .long("steps")
+                    .help("Number of additional simulation steps")
+                    .value_name("STEPS")
+                    .default_value("1000"))
+                .arg(Arg::new("output")
+                    .short('o')
+                    .long("output")
+                    .help("Output file path")
+                    .value_name("FILE")
+                    .default_value("continued.vtk"))
         )
         .subcommand(
             Command::new("study")
-                .about("Run a parameter study with ranges of values")
-                .arg(
-                    Arg::new("gpu")
-                        .short('g')
-                        .long("gpu")
-                        .help("Use GPU for computation")
-                        .action(clap::ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("list_gpus")
-                        .long("list-gpus")
-                        .help("List available GPUs and exit")
-                        .action(clap::ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("select_gpu")
-                        .long("select-gpu")
-                        .help("Select a specific GPU by name fragment (case-insensitive)")
-                        .value_name("NAME")
-                )
-                .arg(
-                    Arg::new("radius_min")
-                        .long("rmin")
-                        .value_name("RADIUS_MIN")
-                        .help("Minimum cylinder radius in cm")
-                        .default_value("0.2"),
-                )
-                .arg(
-                    Arg::new("radius_max")
-                        .long("rmax")
-                        .value_name("RADIUS_MAX")
-                        .help("Maximum cylinder radius in cm")
-                        .default_value("1.0"),
-                )
-                .arg(
-                    Arg::new("radius_steps")
-                        .long("rsteps")
-                        .value_name("RADIUS_STEPS")
-                        .help("Number of radius steps")
-                        .default_value("3"),
-                )
-                .arg(
-                    Arg::new("height")
-                        .short('h')
-                        .long("height")
-                        .value_name("HEIGHT")
-                        .help("Cylinder height in cm")
-                        .default_value("1.0"),
-                )
-                .arg(
-                    Arg::new("temp_min")
-                        .long("tmin")
-                        .value_name("TEMP_MIN")
-                        .help("Minimum temperature in Kelvin")
-                        .default_value("1.0"),
-                )
-                .arg(
-                    Arg::new("temp_max")
-                        .long("tmax")
-                        .value_name("TEMP_MAX")
-                        .help("Maximum temperature in Kelvin")
-                        .default_value("2.1"),
-                )
-                .arg(
-                    Arg::new("temp_steps")
-                        .long("tsteps")
-                        .value_name("TEMP_STEPS")
-                        .help("Number of temperature steps")
-                        .default_value("5"),
-                )
-                .arg(
-                    Arg::new("sim_steps")
-                        .short('s')
-                        .long("steps")
-                        .value_name("SIM_STEPS")
-                        .help("Number of simulation steps")
-                        .default_value("500"),
-                )
-                .arg(
-                    Arg::new("waves")
-                        .short('w')
-                        .long("waves")
-                        .value_name("AMPLITUDE")
-                        .help("Kelvin wave amplitude factor (0.0-1.0)")
-                        .default_value("0.1")
-                )
-                .arg(
-                    Arg::new("ext_field")
-                        .short('e')
-                        .long("ext-field")
-                        .value_name("TYPE")
-                        .help("External field type (none, rotation, uniform, oscillatory, counterflow)")
-                        .default_value("none")
-                )
-                .arg(
-                    Arg::new("ext_value")
-                        .long("ext-value")
-                        .value_name("VALUE")
-                        .help("External field value (format depends on field type)")
-                        .default_value("0.0,0.0,0.0")
-                )
-                .arg(
-                    Arg::new("ext_center")
-                        .long("ext-center")
-                        .value_name("CENTER")
-                        .help("Center point for rotation field (x,y,z)")
-                        .default_value("0.0,0.0,0.0")
-                )
-                .arg(
-                    Arg::new("ext_freq")
-                        .long("ext-freq")
-                        .value_name("FREQ")
-                        .help("Frequency for oscillatory flow (Hz)")
-                        .default_value("1.0")
-                )
-                .arg(
-                    Arg::new("ext_phase")
-                        .long("ext-phase")
-                        .value_name("PHASE")
-                        .help("Phase for oscillatory flow (radians)")
-                        .default_value("0.0")
-                )
-                .arg(
-                    Arg::new("output_dir")
-                        .short('o')
-                        .long("output")
-                        .value_name("DIR")
-                        .help("Output directory for study results")
-                        .default_value("study_results"),
-                )
-        )
-        .subcommand(
-            Command::new("list-checkpoints")
-                .about("List available checkpoint files")
-                .arg(
-                    Arg::new("directory")
-                        .help("Directory to search for checkpoints")
-                        .default_value(".")
-                        .index(1)
-                )
+                .about("Run parameter study")
+                .arg(Arg::new("gpu")
+                    .long("gpu")
+                    .help("Use GPU acceleration")
+                    .action(clap::ArgAction::SetTrue))
+                .arg(Arg::new("list_gpus")
+                    .long("list-gpus")
+                    .help("List available GPUs")
+                    .action(clap::ArgAction::SetTrue))
+                .arg(Arg::new("select_gpu")
+                    .long("select-gpu")
+                    .help("Select specific GPU by name fragment")
+                    .value_name("NAME"))
+                .arg(Arg::new("radius_min")
+                    .long("rmin")
+                    .help("Minimum radius (cm)")
+                    .value_name("RMIN")
+                    .default_value("0.5"))
+                .arg(Arg::new("radius_max")
+                    .long("rmax")
+                    .help("Maximum radius (cm)")
+                    .value_name("RMAX")
+                    .default_value("2.0"))
+                .arg(Arg::new("radius_steps")
+                    .long("rsteps")
+                    .help("Number of radius values to test")
+                    .value_name("RSTEPS")
+                    .default_value("4"))
+                .arg(Arg::new("temperature_min")
+                    .long("tmin")
+                    .help("Minimum temperature (K)")
+                    .value_name("TMIN")
+                    .default_value("1.0"))
+                .arg(Arg::new("temperature_max")
+                    .long("tmax")
+                    .help("Maximum temperature (K)")
+                    .value_name("TMAX")
+                    .default_value("2.0"))
+                .arg(Arg::new("temperature_steps")
+                    .long("tsteps")
+                    .help("Number of temperature values to test")
+                    .value_name("TSTEPS")
+                    .default_value("3"))
+                .arg(Arg::new("output_dir")
+                    .short('o')
+                    .long("output-dir")
+                    .help("Output directory")
+                    .value_name("DIR")
+                    .default_value("study_results"))
+                .arg(Arg::new("steps")
+                    .short('s')
+                    .long("steps")
+                    .help("Steps per simulation")
+                    .value_name("STEPS")
+                    .default_value("500"))
+                .arg(Arg::new("waves")
+                    .short('w')
+                    .long("waves")
+                    .help("Add Kelvin waves with given amplitude (0.0 for none)")
+                    .value_name("AMPLITUDE")
+                    .default_value("0.1"))
+                .arg(Arg::new("ext_field")
+                    .short('f')
+                    .long("field")
+                    .help("External field type: none, rotation, uniform, oscillatory, counterflow")
+                    .value_name("TYPE")
+                    .default_value("none"))
+                .arg(Arg::new("field_value")
+                    .short('v')
+                    .long("value")
+                    .help("External field value (e.g. '0,0,1' for rotation)")
+                    .value_name("VALUE")
+                    .default_value("0,0,0"))
         )
         .get_matches();
 
@@ -284,25 +224,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(matches) = matches.subcommand_matches("single") {
         // If list-gpus flag is set, list available GPUs and exit
         if matches.get_flag("list_gpus") {
-            println!("Listing available GPUs...");
-            let gpus = pollster::block_on(async { ComputeCore::list_available_gpus().await });
-            
-            if gpus.is_empty() {
-                println!("No compatible GPUs found!");
-            } else {
-                println!("Available GPUs:");
-                for (i, (name, device_type, compatibility)) in gpus.iter().enumerate() {
-                    println!("  {}: {} ({}) - {}", i, name, 
-                        match device_type {
-                            wgpu::DeviceType::DiscreteGpu => "Discrete",
-                            wgpu::DeviceType::IntegratedGpu => "Integrated",
-                            wgpu::DeviceType::Cpu => "CPU",
-                            wgpu::DeviceType::Other => "Other",
-                            _ => "Unknown",
-                        },
-                        compatibility
-                    );
-                }
+            println!("Available GPUs:");
+            let gpu_list = pollster::block_on(ComputeCore::list_available_gpus());
+            for (i, (name, device_type, compatibility)) in gpu_list.iter().enumerate() {
+                println!("  {}. {} ({}) - {}", i+1, name, device_type_to_string(*device_type), compatibility);
             }
             return Ok(());
         }
@@ -312,92 +237,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
         let output = matches.get_one::<String>("output").unwrap();
         
+        // Initialize GPU compute core if needed
+        let compute_core = if use_gpu {
+            println!("Initializing GPU compute core...");
+            let core = pollster::block_on(ComputeCore::new_with_device_preference(selected_gpu));
+            Some(core)
+        } else {
+            None
+        };
+        
         // Check if we should load from checkpoint or create a new simulation
         let mut sim = if let Some(checkpoint_file) = matches.get_one::<String>("load_checkpoint") {
             println!("Loading simulation from checkpoint: {}", checkpoint_file);
+            let mut sim = VortexSimulation::load_checkpoint(checkpoint_file)?;
             
-            // Load checkpoint
-            match VortexSimulation::load_checkpoint(checkpoint_file) {
-                Ok(mut loaded_sim) => {
-                    println!("Checkpoint loaded successfully!");
-                    println!("  Radius: {} cm", loaded_sim.radius);
-                    println!("  Height: {} cm", loaded_sim.height);
-                    println!("  Temperature: {} K", loaded_sim.temperature);
-                    println!("  Current simulation time: {} s", loaded_sim.time);
-                    println!("  Vortex lines: {}", loaded_sim.vortex_lines.len());
-                    
-                    // Initialize GPU if requested
-                    if use_gpu {
-                        println!("Initializing GPU for loaded simulation...");
-                        let compute_core = pollster::block_on(async {
-                            if let Some(gpu_name) = selected_gpu {
-                                ComputeCore::new_with_device_preference(Some(gpu_name)).await
-                            } else {
-                                ComputeCore::new().await
-                            }
-                        });
-                        loaded_sim.set_compute_core(compute_core);
-                    }
-                    
-                    loaded_sim
-                },
-                Err(e) => {
-                    eprintln!("Error loading checkpoint: {}", e);
-                    return Err(format!("Failed to load checkpoint: {}", e).into());
-                }
+            // Set compute core if using GPU
+            if let Some(core) = compute_core {
+                sim.set_compute_core(core);
             }
+            
+            sim
         } else {
-            // Create a new simulation with parameters
-            let radius = matches.get_one::<String>("radius").unwrap().parse::<f64>()?;
-            let height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
+            // Create a new simulation
+            let cylinder_radius = matches.get_one::<String>("radius").unwrap().parse::<f64>()?;
+            let cylinder_height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
             let temperature = matches.get_one::<String>("temperature").unwrap().parse::<f64>()?;
             
-            println!("Running single simulation with parameters:");
-            println!("  Radius: {} cm", radius);
-            println!("  Height: {} cm", height);
-            println!("  Temperature: {} K", temperature);
-            println!("  Steps: {}", steps);
-            println!("  Using GPU: {}", use_gpu);
-
-            // Create simulation and optionally initialize GPU
-            if use_gpu {
-                println!("Initializing GPU...");
-                pollster::block_on(async {
-                    if let Some(gpu_name) = selected_gpu {
-                        let compute_core = ComputeCore::new_with_device_preference(Some(gpu_name)).await;
-                        VortexSimulation::new_with_compute_core(radius, height, temperature, compute_core)
-                    } else {
-                        VortexSimulation::new_with_gpu(radius, height, temperature).await
-                    }
-                })
+            println!("Creating new simulation with radius={}, height={}, T={}K",
+                     cylinder_radius, cylinder_height, temperature);
+            
+            if let Some(core) = compute_core {
+                let sim = VortexSimulation::new_with_compute_core(
+                    cylinder_radius,
+                    cylinder_height,
+                    temperature,
+                    core);
+                sim
             } else {
-                VortexSimulation::new(radius, height, temperature)
+                VortexSimulation::new(cylinder_radius, cylinder_height, temperature)
             }
         };
         
         // Process external field parameters and apply if specified
         // (only for new simulations or if we want to override the checkpoint's field)
         if !matches.get_one::<String>("ext_field").unwrap().eq_ignore_ascii_case("none") {
-            let external_field = simulation::parse_external_field(
-                matches.get_one::<String>("ext_field").unwrap(),
-                matches.get_one::<String>("ext_value").unwrap(),
-                matches.get_one::<String>("ext_center").unwrap(),
-                matches.get_one::<String>("ext_freq").unwrap().parse::<f64>()?,
-                matches.get_one::<String>("ext_phase").unwrap().parse::<f64>()?,
-            )?;
+            let ext_field_type = matches.get_one::<String>("ext_field").unwrap().as_str();
+            let field_value = matches.get_one::<String>("field_value").unwrap().as_str();
+            let field_center = matches.get_one::<String>("field_center").unwrap().as_str();
+            let frequency = *matches.get_one::<f64>("frequency").unwrap();
+            let phase = *matches.get_one::<f64>("phase").unwrap();
             
-            // Set external field if specified
-            if let Some(field) = external_field {
-                println!("Setting external field: {:?}", field);
-                sim.external_field = Some(field);
+            println!("Setting external field: {}", ext_field_type);
+            
+            match simulation::parse_external_field(
+                ext_field_type,
+                field_value,
+                field_center,
+                frequency,
+                phase
+            ) {
+                Ok(ext_field) => {
+                    sim.external_field = ext_field;
+                },
+                Err(e) => {
+                    eprintln!("Failed to parse external field: {}", e);
+                    return Err(e);
+                }
             }
         }
         
         // Add Kelvin waves if requested
         let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         if wave_amplitude > 0.0 {
-            println!("Adding Kelvin waves with amplitude factor: {}", wave_amplitude);
-            sim.add_kelvin_waves(wave_amplitude * sim.radius, 3.0);
+            println!("Adding Kelvin waves with amplitude = {}", wave_amplitude);
+            sim.add_kelvin_waves(wave_amplitude, 3.0);
         }
         
         // Run the simulation
@@ -420,34 +333,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // Load the checkpoint
         let mut sim = match VortexSimulation::load_checkpoint(checkpoint_file) {
-            Ok(mut loaded_sim) => {
-                println!("Checkpoint loaded successfully!");
-                println!("  Radius: {} cm", loaded_sim.radius);
-                println!("  Height: {} cm", loaded_sim.height);
-                println!("  Temperature: {} K", loaded_sim.temperature);
-                println!("  Current simulation time: {} s", loaded_sim.time);
-                println!("  Vortex lines: {}", loaded_sim.vortex_lines.len());
-                
-                // Initialize GPU if requested
-                if use_gpu {
-                    println!("Initializing GPU for loaded simulation...");
-                    let compute_core = pollster::block_on(async {
-                        if let Some(gpu_name) = selected_gpu {
-                            ComputeCore::new_with_device_preference(Some(gpu_name)).await
-                        } else {
-                            ComputeCore::new().await
-                        }
-                    });
-                    loaded_sim.set_compute_core(compute_core);
-                }
-                
-                loaded_sim
-            },
+            Ok(sim) => sim,
             Err(e) => {
-                eprintln!("Error loading checkpoint: {}", e);
-                return Err(format!("Failed to load checkpoint: {}", e).into());
+                eprintln!("Failed to load checkpoint: {}", e);
+                return Err(Box::new(e));
             }
         };
+        
+        // Initialize GPU compute core if needed
+        if use_gpu {
+            println!("Initializing GPU compute core...");
+            let core = pollster::block_on(ComputeCore::new_with_device_preference(selected_gpu));
+            sim.set_compute_core(core);
+        }
         
         // Continue the simulation
         println!("Continuing simulation for {} more steps...", steps);
@@ -462,25 +360,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     else if let Some(matches) = matches.subcommand_matches("study") {
         // If list-gpus flag is set, list available GPUs and exit
         if matches.get_flag("list_gpus") {
-            println!("Listing available GPUs...");
-            let gpus = pollster::block_on(async { ComputeCore::list_available_gpus().await });
-            
-            if gpus.is_empty() {
-                println!("No compatible GPUs found!");
-            } else {
-                println!("Available GPUs:");
-                for (i, (name, device_type, compatibility)) in gpus.iter().enumerate() {
-                    println!("  {}: {} ({}) - {}", i, name, 
-                        match device_type {
-                            wgpu::DeviceType::DiscreteGpu => "Discrete",
-                            wgpu::DeviceType::IntegratedGpu => "Integrated",
-                            wgpu::DeviceType::Cpu => "CPU",
-                            wgpu::DeviceType::Other => "Other",
-                            _ => "Unknown",
-                        },
-                        compatibility
-                    );
-                }
+            println!("Available GPUs:");
+            let gpu_list = pollster::block_on(ComputeCore::list_available_gpus());
+            for (i, (name, device_type, compatibility)) in gpu_list.iter().enumerate() {
+                println!("  {}. {} ({}) - {}", i+1, name, device_type_to_string(*device_type), compatibility);
             }
             return Ok(());
         }
@@ -488,133 +371,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let radius_min = matches.get_one::<String>("radius_min").unwrap().parse::<f64>()?;
         let radius_max = matches.get_one::<String>("radius_max").unwrap().parse::<f64>()?;
         let radius_steps = matches.get_one::<String>("radius_steps").unwrap().parse::<usize>()?;
-        let height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
-        let temp_min = matches.get_one::<String>("temp_min").unwrap().parse::<f64>()?;
-        let temp_max = matches.get_one::<String>("temp_max").unwrap().parse::<f64>()?;
-        let temp_steps = matches.get_one::<String>("temp_steps").unwrap().parse::<usize>()?;
-        let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
-        let steps = matches.get_one::<String>("sim_steps").unwrap().parse::<usize>()?;
+        
+        let temp_min = matches.get_one::<String>("temperature_min").unwrap().parse::<f64>()?;
+        let temp_max = matches.get_one::<String>("temperature_max").unwrap().parse::<f64>()?;
+        let temp_steps = matches.get_one::<String>("temperature_steps").unwrap().parse::<usize>()?;
+        
+        let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
         let output_dir = matches.get_one::<String>("output_dir").unwrap();
+        let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
+        
         let use_gpu = matches.get_flag("gpu");
         let selected_gpu = matches.get_one::<String>("select_gpu").map(|s| s.as_str());
         
-        // Process external field parameters
-        let external_field = simulation::parse_external_field(
-            matches.get_one::<String>("ext_field").unwrap(),
-            matches.get_one::<String>("ext_value").unwrap(),
-            matches.get_one::<String>("ext_center").unwrap(),
-            matches.get_one::<String>("ext_freq").unwrap().parse::<f64>()?,
-            matches.get_one::<String>("ext_phase").unwrap().parse::<f64>()?,
-        )?;
-        
         // Create output directory if it doesn't exist
-        if !Path::new(output_dir).exists() {
-            create_dir_all(output_dir)?;
-        }
+        create_dir_all(output_dir)?;
         
-        println!("Running parameter study with:");
-        println!("  Radius range: {} to {} cm ({} steps)", radius_min, radius_max, radius_steps);
-        println!("  Height: {} cm", height);
-        println!("  Temperature range: {} to {} K ({} steps)", temp_min, temp_max, temp_steps);
-        println!("  Kelvin wave amplitude: {}", wave_amplitude);
-        println!("  Simulation steps: {}", steps);
-        if let Some(field) = &external_field {
-            println!("  External field: {:?}", field);
-        }
-        println!("  Using GPU: {}", use_gpu);
-        println!("  Output directory: {}", output_dir);
-        
-        // Initialize GPU compute core if requested
+        // Initialize GPU compute core if needed
         let compute_core = if use_gpu {
-            println!("Initializing GPU...");
-            Some(pollster::block_on(async {
-                if let Some(gpu_name) = selected_gpu {
-                    ComputeCore::new_with_device_preference(Some(gpu_name)).await
-                } else {
-                    ComputeCore::new().await
-                }
-            }))
+            println!("Initializing GPU compute core...");
+            let core = pollster::block_on(ComputeCore::new_with_device_preference(selected_gpu));
+            Some(core)
         } else {
             None
         };
         
-        // Run the parameter study with GPU if selected
-        let results = run_parameter_study(
-            height / 2.0, // base_radius (not used directly in sweep)
-            height,
-            (temp_min + temp_max) / 2.0, // base_temperature (not used directly in sweep)
+        // Parse external field if specified
+        let ext_field_type = matches.get_one::<String>("ext_field").unwrap().as_str();
+        let ext_field = if !ext_field_type.eq_ignore_ascii_case("none") {
+            let field_value = matches.get_one::<String>("field_value").unwrap().as_str();
+            
+            match simulation::parse_external_field(
+                ext_field_type,
+                field_value,
+                "0,0,0", // Default center
+                1.0,     // Default frequency
+                0.0      // Default phase
+            ) {
+                Ok(field) => field,
+                Err(e) => {
+                    eprintln!("Failed to parse external field: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
+        
+        println!("Running parameter study: radius [{} to {}, {} steps], temp [{} to {}, {} steps]",
+                 radius_min, radius_max, radius_steps, temp_min, temp_max, temp_steps);
+        
+        // Run the parameter study
+        let results = simulation::run_parameter_study(
+            1.0, // Base radius
+            2.0, // Height
+            1.5, // Base temperature
             (radius_min, radius_max, radius_steps),
             (temp_min, temp_max, temp_steps),
             wave_amplitude,
             steps,
             output_dir,
             compute_core,
-            external_field,
+            ext_field,
         );
         
-        // Save summary results
-        let summary_file = format!("{}/summary.json", output_dir);
+        // Save results summary
+        let summary_file = Path::new(output_dir).join("summary.json");
         let file = std::fs::File::create(&summary_file)?;
         serde_json::to_writer_pretty(file, &results)?;
         
-        println!("Parameter study complete! Summary saved to {}", summary_file);
-    }
-    else if let Some(matches) = matches.subcommand_matches("list-checkpoints") {
-        let dir = matches.get_one::<String>("directory").unwrap();
-        
-        println!("Searching for checkpoint files in '{}'...", dir);
-        
-        let paths = std::fs::read_dir(dir)?;
-        let mut checkpoints = Vec::new();
-        
-        for path in paths {
-            let path = path?.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "json" {
-                        if let Some(filename) = path.file_name() {
-                            let filename = filename.to_string_lossy();
-                            if filename.contains("checkpoint") {
-                                checkpoints.push(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        if checkpoints.is_empty() {
-            println!("No checkpoint files found.");
-        } else {
-            println!("Found {} checkpoint files:", checkpoints.len());
-            
-            for (i, path) in checkpoints.iter().enumerate() {
-                // Try to open the checkpoint to get basic info
-                match VortexSimulation::load_checkpoint(path.to_string_lossy().as_ref()) {
-                    Ok(sim) => {
-                        println!("{}. {} - Time: {:.3}s, Lines: {}, Temp: {:.2}K", 
-                            i+1,
-                            path.file_name().unwrap().to_string_lossy(),
-                            sim.time,
-                            sim.vortex_lines.len(),
-                            sim.temperature
-                        );
-                    },
-                    Err(_) => {
-                        println!("{}. {} (invalid/corrupted)", 
-                            i+1,
-                            path.file_name().unwrap().to_string_lossy()
-                        );
-                    }
-                }
-            }
-        }
+        println!("Parameter study complete! Summary saved to {}", summary_file.display());
     }
     // Default behavior if no subcommand is provided
     else {
-        println!("Please specify a subcommand: 'single' or 'study'");
-        println!("Use --help for more information");
+        eprintln!("No command specified. Use --help for usage information.");
+        return Err("No command specified".into());
     }
 
     Ok(())
+}
+
+// Helper function to format device type
+fn device_type_to_string(device_type: wgpu::DeviceType) -> &'static str {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => "Discrete GPU",
+        wgpu::DeviceType::IntegratedGpu => "Integrated GPU",
+        wgpu::DeviceType::Cpu => "CPU",
+        wgpu::DeviceType::Other => "Other",
+        _ => "Unknown",
+    }
 }

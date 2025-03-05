@@ -1,13 +1,58 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 use bytemuck::{Pod, Zeroable};
 use serde::{Serialize, Deserialize};
-use crate::simulation::{VortexLine, ExternalFieldParams};
+use crate::simulation::{VortexLine, VortexPoint, ExternalFieldParams};
 
-#[derive(Clone, Debug)]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ReconnectionParams {
+    threshold: f32,
+    max_candidates: u32,
+    padding1: u32,
+    padding2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ReconnectionCandidate {
+    line_idx1: u32,
+    point_idx1: u32,
+    line_idx2: u32,
+    point_idx2: u32,
+    distance: f32,
+    padding: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct FluctuationParams {
+    temperature: f32,
+    dt: f32,
+    noise_amplitude: f32,
+    alpha: f32,
+    alpha_prime: f32,
+    seed: u32,
+    padding1: u32,
+    padding2: u32,
+}
+
+#[derive(Debug)]
 pub struct ComputeCore {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    buffer_pool: std::sync::Mutex<HashMap<(u64, wgpu::BufferUsages), Vec<wgpu::Buffer>>>,
+}
+
+impl Clone for ComputeCore {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            buffer_pool: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl Serialize for ComputeCore {
@@ -15,8 +60,8 @@ impl Serialize for ComputeCore {
     where
         S: serde::Serializer,
     {
-        // Just serialize a placeholder - we can't actually serialize GPU devices
-        serializer.serialize_none()
+        // Instead of None, serialize a special placeholder value
+        serializer.serialize_str("GPU_COMPUTE_CORE_PLACEHOLDER")
     }
 }
 
@@ -25,12 +70,11 @@ impl<'de> Deserialize<'de> for ComputeCore {
     where
         D: serde::Deserializer<'de>,
     {
-        // Skip deserialization - we'll create a new compute core instead
-        let _ = Option::<()>::deserialize(deserializer)?;
+        // Accept either None or our placeholder string
+        let value = serde_json::Value::deserialize(deserializer)?;
         
-        // Return a placeholder that will be replaced
-        // This isn't actually used since we immediately replace it in the with_compute_core call
-        Err(serde::de::Error::custom("ComputeCore cannot be deserialized"))
+        // Always return error - GPU resources need to be recreated
+        Err(serde::de::Error::custom("ComputeCore cannot be deserialized - GPU resources must be recreated"))
     }
 }
 
@@ -63,6 +107,46 @@ struct SimParams {
 }
 
 impl ComputeCore {
+    fn get_or_create_buffer(&self, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+        let mut pool = self.buffer_pool.lock().unwrap();
+        let key = (size, usage);
+        
+        if let Some(buffers) = pool.get_mut(&key) {
+            if let Some(buffer) = buffers.pop() {
+                return buffer;
+            }
+        }
+        
+        // No buffer available, create a new one
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Pooled Buffer"),
+            size,
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+    
+    fn return_buffer_to_pool(&self, buffer: wgpu::Buffer) {
+        let size = buffer.size();
+        let usage = buffer.usage();
+        
+        let mut pool = self.buffer_pool.lock().unwrap();
+        let key = (size, usage);
+        
+        let buffers = pool.entry(key).or_insert_with(Vec::new);
+        buffers.push(buffer);
+        
+        // Limit pool size
+        if buffers.len() > 10 {
+            buffers.remove(0); // Remove oldest buffer if we have too many
+        }
+    }
+    
+    fn release_unused_buffers(&self) {
+        let mut pool = self.buffer_pool.lock().unwrap();
+        pool.clear();
+    }
+
     pub async fn list_available_gpus() -> Vec<(String, wgpu::DeviceType, String)> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapters = instance.enumerate_adapters(wgpu::Backends::all());
@@ -163,7 +247,11 @@ impl ComputeCore {
             }
         );
 
-        Self { device, queue }
+        Self{ 
+            device, 
+            queue,
+            buffer_pool: std::sync::Mutex::new(HashMap::new()),
+        }
     }
     
     // For backward compatibility
@@ -220,6 +308,8 @@ impl ComputeCore {
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+
+        // println!("Starting GPU computation for {} vortex lines with {} total points", vortex_lines.len(), total_points);
         
         // 4. Create compute shader
         let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -388,6 +478,520 @@ impl ComputeCore {
         }
     }
 
+    pub fn detect_reconnections(
+        &self, 
+        vortex_lines: &[VortexLine], 
+        threshold: f64
+    ) -> Vec<(usize, usize, usize, usize)> {
+        // Convert vortex data to GPU-friendly format
+        let (points_data, line_offsets) = self.prepare_vortex_data(vortex_lines);
+        let total_points = points_data.len();
+        
+        // Create buffers
+        let input_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vortex Points Buffer"),
+            contents: bytemuck::cast_slice(&points_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        let line_offset_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Line Offsets Buffer"),
+            contents: bytemuck::cast_slice(&line_offsets),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Create parameters buffer
+        let params = ReconnectionParams {
+            threshold: threshold as f32,
+            max_candidates: 1024, // Maximum number of reconnection candidates
+            padding1: 0,
+            padding2: 0,
+        };
+        
+        let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Reconnection Parameters"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        
+        // Create an atomic counter buffer
+        let counter_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Reconnection Counter Buffer"),
+            size: std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: true,
+        });
+        
+        // Initialize the counter to zero
+        {
+            let mut mapping = counter_buffer.slice(..).get_mapped_range_mut();
+            let counter = bytemuck::from_bytes_mut::<u32>(&mut mapping[0..4]);
+            *counter = 0;
+        }
+        counter_buffer.unmap();
+
+        // Create candidates buffer (with counter in first element)
+        let candidates_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Reconnection Candidates Buffer"),
+            size: (params.max_candidates as usize * std::mem::size_of::<ReconnectionCandidate>() + 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        
+        // Initialize candidates buffer with zero count
+        {
+            let mut mapping = candidates_buffer.slice(0..4).get_mapped_range_mut();
+            let counter = bytemuck::from_bytes_mut::<u32>(&mut mapping[0..4]);
+            *counter = 0;
+        }
+        candidates_buffer.unmap();
+        
+        // Create shader module
+        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Reconnection Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/reconnection.wgsl"))),
+        });
+        
+        // Create bind group layout
+        let bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Reconnection Bind Group Layout"),
+            entries: &[
+                // Input vortex points
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Reconnection candidates output
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Line offsets
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Parameters
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Add the atomic counter binding
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        
+        // Create pipeline layout
+        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Reconnection Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        
+        // Create compute pipeline
+        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Reconnection Compute Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        
+        // Create bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Reconnection Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: candidates_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: line_offset_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: counter_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        
+        // Create encoder and dispatch workgroups
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Reconnection Compute Encoder"),
+        });
+        
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reconnection Compute Pass"),
+                timestamp_writes: None,
+            });
+            
+            compute_pass.set_pipeline(&compute_pipeline);
+            compute_pass.set_bind_group(0, &bind_group, &[]);
+            
+            // Dispatch enough workgroups to process all line pairs
+            let num_lines = vortex_lines.len();
+            let workgroup_count = ((num_lines * (num_lines - 1) / 2) as f64 / 256.0).ceil() as u32;
+            if workgroup_count > 0 {
+                compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+            }
+        }
+        
+        // Create staging buffer to read results
+        let staging_buffer_size = (params.max_candidates as usize * std::mem::size_of::<ReconnectionCandidate>() + 4) as u64;
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Reconnection Staging Buffer"),
+            size: staging_buffer_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        // Copy results to staging buffer
+        encoder.copy_buffer_to_buffer(
+            &candidates_buffer, 
+            0, 
+            &staging_buffer, 
+            0, 
+            staging_buffer_size
+        );
+        
+        // Submit work to GPU
+        self.queue.submit(Some(encoder.finish()));
+        
+        // Read back results
+        let buffer_slice = staging_buffer.slice(..);
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+        
+        self.device.poll(wgpu::Maintain::Wait);
+        
+        if let Some(Ok(_)) = pollster::block_on(receiver.receive()) {
+            let data = buffer_slice.get_mapped_range();
+            
+            // First 4 bytes contain the count
+            let count = std::cmp::min(
+                u32::from_ne_bytes([data[0], data[1], data[2], data[3]]) as usize,
+                params.max_candidates as usize
+            );
+            
+            // Extract candidates
+            let candidates: Vec<ReconnectionCandidate> = bytemuck::cast_slice(&data[4..])
+                .iter()
+                .take(count)
+                .copied()
+                .collect();
+            
+            // Convert to result format and sort by distance (closest first)
+            let mut result: Vec<(usize, usize, usize, usize)> = candidates.iter()
+                .filter(|c| c.distance > 0.0 && c.distance < threshold as f32)
+                .map(|c| (
+                    c.line_idx1 as usize,
+                    c.point_idx1 as usize,
+                    c.line_idx2 as usize,
+                    c.point_idx2 as usize
+                ))
+                .collect();
+            
+            result.sort_unstable_by(|a, b| b.cmp(a)); // Sort in reverse order
+            result
+        } else {
+            eprintln!("Failed to read reconnection candidates from GPU");
+            Vec::new()
+        }
+    }
+
+    pub fn calculate_thermal_fluctuations(
+        &self,
+        vortex_lines: &[VortexLine],
+        temperature: f64,
+        dt: f64
+    ) -> Vec<Vec<[f64; 3]>> {
+        if temperature < 0.01 {
+            // Return zero fluctuations if temperature is negligible
+            return vortex_lines.iter()
+                .map(|line| vec![[0.0, 0.0, 0.0]; line.points.len()])
+                .collect();
+        }
+        
+        // Convert vortex data to GPU-friendly format
+        let (points_data, line_offsets) = self.prepare_vortex_data(vortex_lines);
+        
+        // Create input and output buffers
+        let input_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vortex Points Buffer"),
+            contents: bytemuck::cast_slice(&points_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        let total_points = points_data.len();
+        
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluctuation Output Buffer"),
+            size: (total_points * std::mem::size_of::<[f32; 4]>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        let line_offset_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Line Offsets Buffer"),
+            contents: bytemuck::cast_slice(&line_offsets),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Create simulation parameters
+        let (alpha, alpha_prime) = if temperature > 0.0 {
+            let ratio = (temperature / 2.17).clamp(0.0, 1.0);
+            // Alpha increases with temp, approximately as T⁴ near 0K and levels off near Tλ
+            let alpha = if temperature < 1.0 {
+                0.006 * temperature.powi(4)
+            } else {
+                0.006 + 0.5 * (temperature - 1.0) / 1.17
+            };
+            
+            // Alpha' is typically much smaller
+            let alpha_prime = 0.0001 + alpha * 0.1;
+            
+            (alpha, alpha_prime)
+        } else {
+            (0.0, 0.0)
+        };
+        
+        // Create parameters for thermal fluctuations
+        let params = FluctuationParams {
+            temperature: temperature as f32,
+            dt: dt as f32,
+            noise_amplitude: (1e-4 * (temperature / 2.17).sqrt() * dt.sqrt() * alpha) as f32,
+            alpha: alpha as f32,
+            alpha_prime: alpha_prime as f32,
+            seed: rand::random::<u32>(),
+            padding1: 0,
+            padding2: 0,
+        };
+        
+        let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Fluctuation Parameters"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        
+        // Create shader module
+        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Thermal Fluctuation Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/thermals.wgsl"))),
+        });
+        
+        // Create bind group layout
+        let bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Thermal Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        
+        // Create pipeline layout
+        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Thermal Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        
+        // Create compute pipeline
+        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Thermal Fluctuation Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        
+        // Create bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Thermal Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: line_offset_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        
+        // Create encoder and dispatch
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Thermal Compute Encoder"),
+        });
+        
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Thermal Compute Pass"),
+                timestamp_writes: None,
+            });
+            
+            compute_pass.set_pipeline(&compute_pipeline);
+            compute_pass.set_bind_group(0, &bind_group, &[]);
+            
+            // Dispatch workgroups
+            let workgroup_count = (total_points as f64 / 256.0).ceil() as u32;
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        
+        // Create staging buffer for result readback
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Thermal Staging Buffer"),
+            size: (total_points * std::mem::size_of::<[f32; 4]>()) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        // Copy results to staging buffer
+        encoder.copy_buffer_to_buffer(
+            &output_buffer,
+            0,
+            &staging_buffer,
+            0,
+            (total_points * std::mem::size_of::<[f32; 4]>()) as u64
+        );
+        
+        // Submit work
+        self.queue.submit(Some(encoder.finish()));
+        
+        // Read back results
+        let buffer_slice = staging_buffer.slice(..);
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+        
+        self.device.poll(wgpu::Maintain::Wait);
+        
+        if let Some(Ok(_)) = pollster::block_on(receiver.receive()) {
+            let data = buffer_slice.get_mapped_range();
+            let result: Vec<[f32; 4]> = bytemuck::cast_slice(&data).to_vec();
+            
+            // Organize results by vortex line
+            let mut fluctuations = Vec::with_capacity(vortex_lines.len());
+            let mut point_index = 0;
+            
+            for line in vortex_lines {
+                let mut line_fluctuations = Vec::with_capacity(line.points.len());
+                
+                for _ in 0..line.points.len() {
+                    let fluct = result[point_index];
+                    line_fluctuations.push([
+                        fluct[0] as f64, 
+                        fluct[1] as f64, 
+                        fluct[2] as f64
+                    ]);
+                    point_index += 1;
+                }
+                
+                fluctuations.push(line_fluctuations);
+            }
+            
+            fluctuations
+        } else {
+            eprintln!("Failed to read thermal fluctuations from GPU");
+            // Return zero fluctuations as fallback
+            vortex_lines.iter()
+                .map(|line| vec![[0.0, 0.0, 0.0]; line.points.len()])
+                .collect()
+        }
+    }
+
     fn prepare_vortex_data(&self, vortex_lines: &[VortexLine]) -> (Vec<GpuVortexPoint>, Vec<LineOffset>) {
         let mut points_data = Vec::new();
         let mut line_offsets = Vec::with_capacity(vortex_lines.len());
@@ -419,6 +1023,114 @@ impl ComputeCore {
         }
         
         (points_data, line_offsets)
+    }
+
+    pub fn remesh_vortices_gpu(
+        &self,
+        vortex_lines: &[VortexLine],
+        target_spacing: f64,
+        min_spacing: f64,
+        max_spacing: f64
+    ) -> Vec<VortexLine> {
+        // For each line, calculate the new number of points based on line length
+        let mut remeshed_lines = Vec::with_capacity(vortex_lines.len());
+        
+        for line in vortex_lines {
+            // Calculate line length
+            let mut length = 0.0;
+            for i in 0..line.points.len() {
+                let j = (i + 1) % line.points.len();
+                let dx = line.points[i].position[0] - line.points[j].position[0];
+                let dy = line.points[i].position[1] - line.points[j].position[1];
+                let dz = line.points[i].position[2] - line.points[j].position[2];
+                length += (dx*dx + dy*dy + dz*dz).sqrt();
+            }
+            
+            // Calculate target number of points
+            let new_point_count = (length / target_spacing).round() as usize;
+            if new_point_count < 3 {
+                // Keep original line if it would become too small
+                remeshed_lines.push(line.clone());
+                continue;
+            }
+            
+            // Create new points with uniform spacing
+            let mut new_points = Vec::with_capacity(new_point_count);
+            let delta_param = 1.0 / new_point_count as f64;
+            
+            for i in 0..new_point_count {
+                let t = i as f64 * delta_param;
+                let position = self.interpolate_position(line, t);
+                
+                new_points.push(VortexPoint {
+                    position,
+                    tangent: [0.0, 0.0, 0.0] // Will be updated later
+                });
+            }
+            
+            // Create new line
+            let mut remeshed_line = VortexLine { points: new_points };
+            
+            // Update tangent vectors
+            self.calculate_tangent_vectors(&mut remeshed_line);
+            
+            remeshed_lines.push(remeshed_line);
+        }
+        
+        remeshed_lines
+    }
+    
+    // Helper method to interpolate position along a closed vortex line
+    fn interpolate_position(&self, line: &VortexLine, t: f64) -> [f64; 3] {
+        let n_points = line.points.len();
+        let param = t * n_points as f64;
+        let idx1 = param.floor() as usize % n_points;
+        let idx2 = (idx1 + 1) % n_points;
+        let frac = param - param.floor();
+        
+        let p1 = line.points[idx1].position;
+        let p2 = line.points[idx2].position;
+        
+        [
+            p1[0] * (1.0 - frac) + p2[0] * frac,
+            p1[1] * (1.0 - frac) + p2[1] * frac,
+            p1[2] * (1.0 - frac) + p2[2] * frac,
+        ]
+    }
+    
+    // Helper method to calculate tangent vectors
+    fn calculate_tangent_vectors(&self, line: &mut VortexLine) {
+        let n_points = line.points.len();
+        if n_points < 3 {
+            return;
+        }
+        
+        for i in 0..n_points {
+            let prev = (i + n_points - 1) % n_points;
+            let next = (i + 1) % n_points;
+            
+            // Calculate segments
+            let dx_prev = line.points[i].position[0] - line.points[prev].position[0];
+            let dy_prev = line.points[i].position[1] - line.points[prev].position[1];
+            let dz_prev = line.points[i].position[2] - line.points[prev].position[2];
+            
+            let dx_next = line.points[next].position[0] - line.points[i].position[0];
+            let dy_next = line.points[next].position[1] - line.points[i].position[1];
+            let dz_next = line.points[next].position[2] - line.points[i].position[2];
+            
+            // Average the two segments
+            let tx = dx_prev + dx_next;
+            let ty = dy_prev + dy_next;
+            let tz = dz_prev + dz_next;
+            
+            // Normalize
+            let mag = (tx*tx + ty*ty + tz*tz).sqrt();
+            if mag > 1e-10 {
+                line.points[i].tangent = [tx/mag, ty/mag, tz/mag];
+            } else {
+                line.points[i].tangent = [0.0, 0.0, 1.0];
+            }
+        }
     }
     
     fn create_sim_params(

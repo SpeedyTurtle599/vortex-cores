@@ -538,6 +538,33 @@ pub fn handle_reconnections(vortex_lines: &mut Vec<VortexLine>, reconnection_thr
     validate_vortex_lines(vortex_lines);
 }
 
+/// Process reconnections detected by the GPU
+pub fn process_reconnections(
+    vortex_lines: &mut Vec<VortexLine>, 
+    reconnection_candidates: Vec<(usize, usize, usize, usize)>
+) {
+    // Process reconnections (starting from the end to avoid indexing issues)
+    for (line_idx1, point_idx1, line_idx2, point_idx2) in reconnection_candidates {
+        // Skip if indices are no longer valid due to previous reconnections
+        if line_idx1 >= vortex_lines.len() || line_idx2 >= vortex_lines.len() {
+            continue;
+        }
+        
+        let line1_len = vortex_lines[line_idx1].points.len();
+        let line2_len = vortex_lines[line_idx2].points.len();
+        
+        if point_idx1 >= line1_len || point_idx2 >= line2_len {
+            continue;
+        }
+        
+        // Perform the actual reconnection using the existing function
+        reconnect_vortex_lines(vortex_lines, line_idx1, point_idx1, line_idx2, point_idx2);
+    }
+    
+    // Validate vortex lines after reconnections
+    validate_vortex_lines(vortex_lines);
+}
+
 // Validate vortex lines and remove any degenerate elements
 fn validate_vortex_lines(vortex_lines: &mut Vec<VortexLine>) {
     // Remove any degenerate lines (too few points)
@@ -569,6 +596,23 @@ fn validate_vortex_lines(vortex_lines: &mut Vec<VortexLine>) {
             }
         }
     }
+}
+
+pub fn remove_tiny_loops(lines: &mut Vec<VortexLine>, min_size: f64) {
+    lines.retain(|line| {
+        // Calculate line length
+        let mut length = 0.0;
+        for i in 0..line.points.len() {
+            let j = (i + 1) % line.points.len();
+            let dx = line.points[i].position[0] - line.points[j].position[0];
+            let dy = line.points[i].position[1] - line.points[j].position[1];
+            let dz = line.points[i].position[2] - line.points[j].position[2];
+            length += (dx*dx + dy*dy + dz*dz).sqrt();
+        }
+        
+        // Keep lines longer than minimum size
+        length > min_size
+    });
 }
 
 /// Actual reconnection algorithm that changes line connectivity
