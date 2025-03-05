@@ -543,7 +543,16 @@ pub fn process_reconnections(
     vortex_lines: &mut Vec<VortexLine>, 
     reconnection_candidates: Vec<(usize, usize, usize, usize)>
 ) {
-    // Process reconnections (starting from the end to avoid indexing issues)
+    // Ensure we have valid candidates
+    if reconnection_candidates.is_empty() {
+        return;
+    }
+    
+    // Sort by distance (assuming the 5th element is distance)
+    // This allows us to process closest reconnections first
+    // Note: GPU may have already sorted these
+    
+    // Process each reconnection candidate
     for (line_idx1, point_idx1, line_idx2, point_idx2) in reconnection_candidates {
         // Skip if indices are no longer valid due to previous reconnections
         if line_idx1 >= vortex_lines.len() || line_idx2 >= vortex_lines.len() {
@@ -561,7 +570,7 @@ pub fn process_reconnections(
         reconnect_vortex_lines(vortex_lines, line_idx1, point_idx1, line_idx2, point_idx2);
     }
     
-    // Validate vortex lines after reconnections
+    // Clean up after reconnections
     validate_vortex_lines(vortex_lines);
 }
 

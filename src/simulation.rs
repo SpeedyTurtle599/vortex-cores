@@ -6,9 +6,11 @@ use nalgebra::Vector3;
 use std::vec::Vec;
 use std::fs::File;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
 use rand::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
+use once_cell::sync::Lazy;
 
 // MARK: Data Structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +62,32 @@ pub struct SimulationStats {
     pub kinetic_energy: Vec<f64>,
     pub reconnection_count: usize,
     pub time_points: Vec<f64>,
+}
+
+// Global progress bar for coordinated output
+static PROGRESS_BAR: Lazy<Arc<Mutex<Option<ProgressBar>>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(None))
+});
+
+pub fn set_global_progress_bar(bar: ProgressBar) {
+    let mut global_bar = PROGRESS_BAR.lock().unwrap();
+    *global_bar = Some(bar);
+}
+
+pub fn clear_global_progress_bar() {
+    let mut global_bar = PROGRESS_BAR.lock().unwrap();
+    if let Some(bar) = global_bar.take() {
+        bar.finish();
+    }
+}
+
+pub fn log_message(message: &str) {
+    let global_bar = PROGRESS_BAR.lock().unwrap();
+    if let Some(bar) = &*global_bar {
+        bar.set_message(message.to_string());
+    } else {
+        println!("{}", message);
+    }
 }
 
 // MARK: Implementation
@@ -127,11 +155,20 @@ impl VortexSimulation {
     }
     
     pub fn run(&mut self, steps: usize) {
-        println!("Running simulation for {} steps...", steps);
+        let progress_bar = ProgressBar::new(steps as u64);
+        progress_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        set_global_progress_bar(progress_bar.clone());
+        
+        progress_bar.set_message("Initializing simulation...");
         
         // Initialize vortices
         self.initialize_vortices();
-
+    
         // Add Kelvin waves with amplitude proportional to temperature
         // More thermal energy = more waves
         if self.temperature > 0.1 {
@@ -140,14 +177,7 @@ impl VortexSimulation {
             self.add_kelvin_waves(amplitude, wavenumber);
         }
         
-        // Set up progress bar
-        let progress_bar = ProgressBar::new(steps as u64);
-        progress_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("#>-")
-        );
+        progress_bar.set_message(format!("Starting simulation with {} vortex lines", self.vortex_lines.len()));
         
         // Time evolution loop
         let dt = 0.001; // time step
@@ -166,7 +196,7 @@ impl VortexSimulation {
             self.evolve_vortices(dt);
             
             // Handle vortex reconnections
-            self.handle_reconnections();
+            self.handle_reconnections_with_progress_bar(&progress_bar);
             
             // Apply boundary conditions
             self.apply_boundary_conditions();
@@ -178,26 +208,96 @@ impl VortexSimulation {
             
             // Update statistics
             if step % 10 == 0 {
-                self.update_statistics();
+                self.update_statistics_with_progress_bar(&progress_bar);
             }
             
             // Save checkpoint
             if step % checkpoint_interval == 0 && step > 0 {
                 let checkpoint_filename = format!("checkpoint_{}.json", step);
+                progress_bar.set_message(format!("Saving checkpoint: {}", checkpoint_filename));
                 if let Err(e) = self.save_checkpoint(&checkpoint_filename) {
-                    eprintln!("Error saving checkpoint: {}", e);
+                    progress_bar.set_message(format!("Error saving checkpoint: {}", e));
                 }
             }
             
             self.time += dt;
         }
         
-        progress_bar.finish_with_message("Simulation complete!");
+        progress_bar.finish_with_message(format!(
+            "Simulation complete! Final state: {} vortex lines, t = {:.3} s", 
+            self.vortex_lines.len(), self.time
+        ));
+        clear_global_progress_bar();
+    }
+
+    // Add these new methods for handling progress bar updates
+    fn handle_reconnections_with_progress_bar(&mut self, progress_bar: &ProgressBar) {
+        let reconnection_threshold = 0.01 * self.radius;
+        let previous_line_count = self.vortex_lines.len();
+        let previous_total_length = physics::calculate_total_length(&self.vortex_lines);
+        
+        if self.using_gpu && self.compute_core.is_some() {
+            // Use GPU for detecting potential reconnection points
+            let compute_core = self.compute_core.as_ref().unwrap();
+            let reconnection_candidates = compute_core.detect_reconnections(
+                &self.vortex_lines, 
+                reconnection_threshold
+            );
+            
+            if !reconnection_candidates.is_empty() {
+                // Process the GPU-detected reconnection points
+                physics::process_reconnections(&mut self.vortex_lines, reconnection_candidates);
+                
+                // Count as a reconnection event
+                self.stats.reconnection_count += 1;
+                
+                // After reconnection, remove tiny loops and update line data
+                physics::remove_tiny_loops(&mut self.vortex_lines, 0.005 * self.radius);
+            }
+        } else {
+            // Existing CPU implementation
+            physics::handle_reconnections(&mut self.vortex_lines, reconnection_threshold);
+        }
+        
+        // After reconnection, check if line count or length changed significantly
+        let current_line_count = self.vortex_lines.len();
+        let current_total_length = physics::calculate_total_length(&self.vortex_lines);
+        
+        let line_count_changed = current_line_count != previous_line_count;
+        let length_reduced = (previous_total_length - current_total_length) > 0.001;
+        
+        if line_count_changed || length_reduced {
+            progress_bar.set_message(format!(
+                "Reconnection at t={:.3}s: Lines {} → {}, Length {:.3} → {:.3}",
+                self.time, previous_line_count, current_line_count,
+                previous_total_length, current_total_length
+            ));
+        }
+    }
+
+    fn update_statistics_with_progress_bar(&mut self, progress_bar: &ProgressBar) {
+        // Calculate total vortex length
+        let total_length = physics::calculate_total_length(&self.vortex_lines);
+        
+        // Calculate kinetic energy
+        let kinetic_energy = physics::calculate_kinetic_energy(&self.vortex_lines);
+        
+        // Store the values
+        self.stats.total_length.push(total_length);
+        self.stats.kinetic_energy.push(kinetic_energy);
+        self.stats.time_points.push(self.time);
+        
+        // Every 10 updates, calculate and print detailed energy breakdown
+        if self.stats.time_points.len() % 10 == 0 {
+            let (e_kin, e_pot, e_wave) = self.calculate_detailed_energy();
+            progress_bar.set_message(format!(
+                "L={:.4} cm, E_kin={:.2e}, E_pot={:.2e}, E_wave={:.2e}", 
+                total_length, e_kin, e_pot, e_wave
+            ));
+        }
     }
 
     fn initialize_vortices(&mut self) {
-        println!("Initializing vortex configuration...");
-        
         // Create more varied and interesting initial state
         
         // First ring
@@ -579,11 +679,11 @@ impl VortexSimulation {
         let length_reduced = (previous_total_length - current_total_length) > 0.001;
         
         if line_count_changed || length_reduced {
-            println!(
+            log_message(&format!(
                 "Reconnection detected at t={:.3}s: Lines {} -> {}, Length {:.3} -> {:.3}",
                 self.time, previous_line_count, current_line_count,
                 previous_total_length, current_total_length
-            );
+            ));
         }
     }
     
@@ -676,13 +776,14 @@ impl VortexSimulation {
         // Every 10 updates, calculate and print detailed energy breakdown
         if self.stats.time_points.len() % 10 == 0 {
             let (e_kin, e_pot, e_wave) = self.calculate_detailed_energy();
-            println!("Energy: Kinetic={:.4e}, Potential={:.4e}, Waves={:.4e}", e_kin, e_pot, e_wave);
+            log_message(&format!(
+                "Energy: Kinetic={:.4e}, Potential={:.4e}, Waves={:.4e}", e_kin, e_pot, e_wave
+            ));
         }
     }
     
     // Save checkpoint for resuming simulation later
     pub fn save_checkpoint(&self, filename: &str) -> io::Result<()> {
-        println!("Saving checkpoint to {}...", filename);
         let file = File::create(filename)?;
         serde_json::to_writer(file, self)?;
         Ok(())
@@ -690,16 +791,13 @@ impl VortexSimulation {
     
     // Load checkpoint to resume simulation
     pub fn load_checkpoint(filename: &str) -> io::Result<Self> {
-        println!("Loading checkpoint from {}...", filename);
         let file = File::open(filename)?;
         let sim: VortexSimulation = serde_json::from_reader(file)?;
         Ok(sim)
     }
     
     // Save simulation results
-    pub fn save_results(&self, filename: &str) {
-        println!("Saving results to {}...", filename);
-        
+    pub fn save_results(&self, filename: &str) {        
         // Use the detailed VTK export instead of basic save_vtk
         if let Err(e) = self.save_detailed_vtk(filename) {
             eprintln!("Error saving VTK file: {}", e);
@@ -934,7 +1032,7 @@ pub fn run_parameter_study(
     let temp_values = generate_parameter_range(temp_min, temp_max, temp_steps);
     
     let total_runs = radius_values.len() * temp_values.len();
-    println!("Running {} simulations in total", total_runs);
+    log_message(&format!("Running {} simulations in total", total_runs));
     
     let mut results = Vec::new();
     let mut run_count = 0;

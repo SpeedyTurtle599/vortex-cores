@@ -33,6 +33,14 @@ struct ReconnectionParams {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    // First thread initializes counter to 0
+    if (global_id.x == 0u) {
+        atomicStore(&candidate_counter, 0u);
+    }
+    
+    // Add a barrier to ensure all threads see the initialized counter
+    workgroupBarrier();
+    
     let point_idx = global_id.x;
     
     // Skip if out of bounds

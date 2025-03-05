@@ -514,19 +514,19 @@ impl ComputeCore {
             usage: wgpu::BufferUsages::UNIFORM,
         });
         
-        // Create an atomic counter buffer
+        // Add atomic counter buffer for GPU to count reconnection candidates
         let counter_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Reconnection Counter Buffer"),
+            label: Some("Reconnection Counter"),
             size: std::mem::size_of::<u32>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
         
-        // Initialize the counter to zero
+        // Initialize counter to 0
         {
-            let mut mapping = counter_buffer.slice(..).get_mapped_range_mut();
-            let counter = bytemuck::from_bytes_mut::<u32>(&mut mapping[0..4]);
-            *counter = 0;
+            let mut counter_data = counter_buffer.slice(..).get_mapped_range_mut();
+            let counter = counter_data.as_mut_ptr() as *mut u32;
+            unsafe { *counter = 0; }
         }
         counter_buffer.unmap();
 

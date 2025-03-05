@@ -1288,6 +1288,7 @@ dependencies = [
  "futures-intrusive",
  "indicatif",
  "nalgebra",
+ "once_cell",
  "pollster",
  "rand",
  "rayon",

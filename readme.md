@@ -188,3 +188,6 @@ This simulation makes the following key assumptions:
 1. Donnelly, R.J. (1991). Quantized Vortices in Helium II. Cambridge University Press.
 2. Schwarz, K.W. (1985). Three-dimensional vortex dynamics in superfluid ⁴He: Homogeneous superfluid turbulence. Physical Review B, 38(4), 2398-2417.
 3. Barenghi, C.F., Skrbek, L., & Sreenivasan, K.R. (2014). Introduction to quantum turbulence. Proceedings of the National Academy of Sciences, 111(Supplement 1), 4647-4652.
+
+## To Do
+* [ ] Fix handle_reconnections to ensure that the reconnection is performed when operating in GPU mode

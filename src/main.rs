@@ -239,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // Initialize GPU compute core if needed
         let compute_core = if use_gpu {
-            println!("Initializing GPU compute core...");
+            simulation::log_message(&format!("Initializing GPU compute core..."));
             let core = pollster::block_on(ComputeCore::new_with_device_preference(selected_gpu));
             Some(core)
         } else {
@@ -248,7 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // Check if we should load from checkpoint or create a new simulation
         let mut sim = if let Some(checkpoint_file) = matches.get_one::<String>("load_checkpoint") {
-            println!("Loading simulation from checkpoint: {}", checkpoint_file);
+            simulation::log_message(&format!("Loading simulation from checkpoint: {}", checkpoint_file));
             let mut sim = VortexSimulation::load_checkpoint(checkpoint_file)?;
             
             // Set compute core if using GPU
@@ -263,8 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cylinder_height = matches.get_one::<String>("height").unwrap().parse::<f64>()?;
             let temperature = matches.get_one::<String>("temperature").unwrap().parse::<f64>()?;
             
-            println!("Creating new simulation with radius={}, height={}, T={}K",
-                     cylinder_radius, cylinder_height, temperature);
+            simulation::log_message(&format!("Creating new simulation with radius={}, height={}, T={}K", cylinder_radius, cylinder_height, temperature));
             
             if let Some(core) = compute_core {
                 let sim = VortexSimulation::new_with_compute_core(
@@ -287,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let frequency = *matches.get_one::<f64>("frequency").unwrap();
             let phase = *matches.get_one::<f64>("phase").unwrap();
             
-            println!("Setting external field: {}", ext_field_type);
+            simulation::log_message(&format!("Setting external field: {}", ext_field_type));
             
             match simulation::parse_external_field(
                 ext_field_type,
@@ -300,7 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sim.external_field = ext_field;
                 },
                 Err(e) => {
-                    eprintln!("Failed to parse external field: {}", e);
+                    simulation::log_message(&format!("Failed to parse external field: {}", e));
                     return Err(e);
                 }
             }
@@ -309,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Add Kelvin waves if requested
         let wave_amplitude = matches.get_one::<String>("waves").unwrap().parse::<f64>()?;
         if wave_amplitude > 0.0 {
-            println!("Adding Kelvin waves with amplitude = {}", wave_amplitude);
+            simulation::log_message(&format!("Adding Kelvin waves with amplitude = {}", wave_amplitude));
             sim.add_kelvin_waves(wave_amplitude, 3.0);
         }
         
@@ -329,7 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let steps = matches.get_one::<String>("steps").unwrap().parse::<usize>()?;
         let output = matches.get_one::<String>("output").unwrap();
         
-        println!("Resuming simulation from checkpoint: {}", checkpoint_file);
+        simulation::log_message(&format!("Resuming simulation from checkpoint: {}", checkpoint_file));
         
         // Load the checkpoint
         let mut sim = match VortexSimulation::load_checkpoint(checkpoint_file) {
@@ -342,19 +341,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // Initialize GPU compute core if needed
         if use_gpu {
-            println!("Initializing GPU compute core...");
+            simulation::log_message(&format!("Initializing GPU compute core..."));
             let core = pollster::block_on(ComputeCore::new_with_device_preference(selected_gpu));
             sim.set_compute_core(core);
         }
         
         // Continue the simulation
-        println!("Continuing simulation for {} more steps...", steps);
+        simulation::log_message(&format!("Continuing simulation for {} more steps...", steps));
         sim.run(steps);
         
         // Save the results
         sim.save_results(output);
         
-        println!("Resumed simulation complete! Results saved to {}", output);
+        println!("\nResumed simulation complete! Results saved to {}", output);
     }
     // Handle parameter study
     else if let Some(matches) = matches.subcommand_matches("study") {
