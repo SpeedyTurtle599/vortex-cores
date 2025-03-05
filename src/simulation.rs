@@ -1,3 +1,4 @@
+// External crates
 use crate::physics;
 use crate::visualisation;
 use crate::extfields::ExternalField;
@@ -9,6 +10,7 @@ use serde::{Serialize, Deserialize};
 use rand::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 
+// MARK: Data Structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VortexPoint {
     pub position: [f64; 3],
@@ -90,7 +92,8 @@ impl VortexSimulation {
             ExternalField::Counterflow { velocity } => Some(ExternalFieldParams::Counterflow {
                 velocity: [velocity.x, velocity.y, velocity.z],
             }),
-            _ => None, // Custom field cannot be stored directly
+            ExternalField::None => None,
+            ExternalField::PoiseuilleFlow { .. } => None, // Cannot be stored directly
         };
     }
     
@@ -124,7 +127,7 @@ impl VortexSimulation {
     }
     
     pub fn run(&mut self, steps: usize) {
-        println!("Running simulation for {steps} steps...");
+        println!("Running simulation for {} steps...", steps);
         
         // Initialize vortices
         self.initialize_vortices();
@@ -220,7 +223,7 @@ impl VortexSimulation {
     fn create_vortex_array(&mut self) {
         // Create array of vortices for rotation
         let num_vortices = 10; // Arbitrary number for demonstration
-        let mut rng = rand::thread_rng(); // Fix: use thread_rng() instead of rng()
+        let mut rng = rand::rng(); // Fix: use thread_rng() instead of rng()
         
         for _ in 0..num_vortices {
             // Place vortices randomly within the cylinder
@@ -794,6 +797,7 @@ fn generate_parameter_range(min: f64, max: f64, steps: usize) -> Vec<f64> {
     values
 }
 
+// MARK: Simulation Result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub radius: f64,

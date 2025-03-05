@@ -152,7 +152,6 @@ pub fn calculate_local_velocities(line: &VortexLine, all_lines: &[VortexLine]) -
     // For each point in the line
     for (i, point) in line.points.iter().enumerate() {
         let pos = Vector3::new(point.position[0], point.position[1], point.position[2]);
-        let tangent = Vector3::new(point.tangent[0], point.tangent[1], point.tangent[2]);
         
         // Get neighboring points for LIA
         let n_points = line.points.len();
