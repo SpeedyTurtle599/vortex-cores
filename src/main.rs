@@ -60,6 +60,7 @@ fn main() {
     println!("Cylinder: radius = {} cm, height = {} cm", args.radius, args.height);
     println!("Temperature: {} K", args.temperature);
     println!("Steps: {}", args.steps);
+    println!("Kelvin wave initialization: {}", args.kelvin);
     
     // Initialize simulation
     let mut sim = simulation::VortexSimulation::new(

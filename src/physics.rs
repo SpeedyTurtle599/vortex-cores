@@ -10,7 +10,7 @@ const CORE_RADIUS: f64 = 1.0e-8; // cm
 const LIA_BETA: f64 = 10.0; // ln(L/a) typically 10-12 for superfluid helium
 
 /// Calculate temperature dependent mutual friction coefficients
-fn mutual_friction_coefficients(temperature: f64) -> (f64, f64) {
+pub fn mutual_friction_coefficients(temperature: f64) -> (f64, f64) {
     // More realistic temperature dependence based on experimental data
     // Values based on Donnelly & Barenghi (1998)
     if temperature < 0.001 {
@@ -143,6 +143,70 @@ pub fn add_kelvin_wave(line: &mut VortexLine, amplitude: f64, wavelengths: usize
     
     // Update tangent vectors after perturbing positions
     update_tangent_vectors(line);
+}
+
+/// Calculate local velocities at each point on a vortex line
+pub fn calculate_local_velocities(line: &VortexLine, all_lines: &[VortexLine]) -> Vec<Vector3<f64>> {
+    let mut velocities = Vec::with_capacity(line.points.len());
+    
+    // For each point in the line
+    for (i, point) in line.points.iter().enumerate() {
+        let pos = Vector3::new(point.position[0], point.position[1], point.position[2]);
+        let tangent = Vector3::new(point.tangent[0], point.tangent[1], point.tangent[2]);
+        
+        // Get neighboring points for LIA
+        let n_points = line.points.len();
+        let prev_idx = (i + n_points - 1) % n_points;
+        let next_idx = (i + 1) % n_points;
+        
+        let prev_pos = Vector3::new(
+            line.points[prev_idx].position[0],
+            line.points[prev_idx].position[1],
+            line.points[prev_idx].position[2],
+        );
+        
+        let next_pos = Vector3::new(
+            line.points[next_idx].position[0],
+            line.points[next_idx].position[1],
+            line.points[next_idx].position[2],
+        );
+        
+        // Calculate LIA velocity (self-induced motion)
+        let v_lia = lia_velocity(&prev_pos, &pos, &next_pos);
+        let mut velocity = v_lia;
+        
+        // Add contributions from other vortex segments (non-local effects)
+        // For performance reasons, we may want to limit this to nearby segments only
+        for other_line in all_lines {
+            for (j, other_point) in other_line.points.iter().enumerate() {
+                // Skip self-point and immediate neighbors (handled by LIA)
+                if std::ptr::eq(line, other_line) && 
+                   (j == i || j == prev_idx || j == next_idx) {
+                    continue;
+                }
+                
+                let other_pos = Vector3::new(
+                    other_point.position[0], 
+                    other_point.position[1], 
+                    other_point.position[2]
+                );
+                
+                let other_tangent = Vector3::new(
+                    other_point.tangent[0],
+                    other_point.tangent[1],
+                    other_point.tangent[2]
+                );
+                
+                // Calculate Biot-Savart contribution
+                let bs_vel = biot_savart(&other_pos, &other_tangent, &pos);
+                velocity += bs_vel.scale(QUANTUM_CIRCULATION);
+            }
+        }
+        
+        velocities.push(velocity);
+    }
+    
+    velocities
 }
 
 /// Calculate kinetic energy in the vortex tangle

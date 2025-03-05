@@ -220,12 +220,12 @@ impl VortexSimulation {
     fn create_vortex_array(&mut self) {
         // Create array of vortices for rotation
         let num_vortices = 10; // Arbitrary number for demonstration
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng(); // Fix: use thread_rng() instead of rng()
         
         for _ in 0..num_vortices {
             // Place vortices randomly within the cylinder
-            let r = self.radius * 0.8 * rng.random::<f64>().sqrt(); // sqrt for uniform distribution in circle
-            let theta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let r = self.radius * 0.8 * rng.random::<f64>().sqrt(); // Fix: use gen instead of random
+            let theta = 2.0 * std::f64::consts::PI * rng.random::<f64>(); // Fix: use gen instead of random
             let x = r * theta.cos();
             let y = r * theta.sin();
             let z_start = 0.1 * self.height;
@@ -292,36 +292,48 @@ impl VortexSimulation {
         );
     }
 
-    // Add this new method to implement thermal fluctuations
     fn add_thermal_fluctuations(&mut self, dt: f64) {
         // Only apply thermal fluctuations if temperature is above absolute zero
         if self.temperature < 0.01 {
             return;
         }
         
-        // Temperature-dependent noise amplitude
-        // This is a simplified model based on fluctuation-dissipation theorem
-        // Real model would be more complex
-        let noise_amplitude = 1e-4 * (self.temperature / 2.17).sqrt() * dt.sqrt();
+        // Get Hall-Vinen mutual friction coefficients
+        let (alpha, alpha_prime) = physics::mutual_friction_coefficients(self.temperature);
+        
+        // Temperature-dependent noise amplitude with more physical basis
+        let noise_amplitude = 1e-4 * (self.temperature / 2.17).sqrt() * dt.sqrt() * alpha;
         let mut rng = rand::rng();
         
-        for line in &mut self.vortex_lines {
-            for point in &mut line.points {
-                // Generate random fluctuations perpendicular to vortex line
-                // (to preserve line length approximately)
+        // First, calculate velocities for all lines ahead of time
+        // This avoids the borrowing conflict
+        let mut all_velocities = Vec::with_capacity(self.vortex_lines.len());
+        
+        for line in &self.vortex_lines {
+            let velocities = physics::calculate_local_velocities(line, &self.vortex_lines);
+            all_velocities.push(velocities);
+        }
+        
+        // Now apply the fluctuations using pre-calculated velocities
+        for (line_idx, line) in self.vortex_lines.iter_mut().enumerate() {
+            let velocities = &all_velocities[line_idx];
+            
+            for (i, point) in line.points.iter_mut().enumerate() {
+                // Get local velocity components
+                let v_sl = velocities.get(i).unwrap_or(&Vector3::zeros()).clone();
                 
-                // Create random vector
+                // Apply mutual friction
+                let tangent = Vector3::new(point.tangent[0], point.tangent[1], point.tangent[2]);
+                let v_sl_perp = v_sl - tangent * v_sl.dot(&tangent);
+                
+                // Apply temperature-dependent friction
+                let friction = alpha * v_sl_perp.cross(&tangent) + alpha_prime * v_sl_perp;
+                
+                // Create random vector with physically correct distribution
                 let random_vec = Vector3::new(
-                    rng.gen_range(-1.0..1.0),
-                    rng.gen_range(-1.0..1.0), 
-                    rng.gen_range(-1.0..1.0)
-                );
-                
-                // Get tangent as Vector3
-                let tangent = Vector3::new(
-                    point.tangent[0],
-                    point.tangent[1],
-                    point.tangent[2]
+                    rng.random::<f64>() * 2.0 - 1.0, // Use gen instead of random
+                    rng.random::<f64>() * 2.0 - 1.0,
+                    rng.random::<f64>() * 2.0 - 1.0
                 );
                 
                 // Project random vector to be perpendicular to tangent
@@ -331,10 +343,10 @@ impl VortexSimulation {
                 // Normalize and scale by noise amplitude
                 let noise = perpendicular.normalize() * noise_amplitude;
                 
-                // Apply perturbation
-                point.position[0] += noise.x;
-                point.position[1] += noise.y;
-                point.position[2] += noise.z;
+                // Apply both deterministic friction and random fluctuations
+                point.position[0] += (friction.x + noise.x) * dt;
+                point.position[1] += (friction.y + noise.y) * dt;
+                point.position[2] += (friction.z + noise.z) * dt;
             }
         }
         
@@ -710,4 +722,83 @@ impl VortexSimulation {
         
         Ok(())
     }
+}
+
+pub fn run_parameter_study(
+    base_radius: f64,
+    base_height: f64,
+    base_temperature: f64,
+    radius_range: (f64, f64, usize),       // (min, max, steps)
+    temperature_range: (f64, f64, usize),  // (min, max, steps)
+    steps: usize,
+    output_dir: &str,
+) -> Vec<SimulationResult> {
+    let mut results = Vec::new();
+    
+    let radii = generate_parameter_range(radius_range.0, radius_range.1, radius_range.2);
+    let temperatures = generate_parameter_range(temperature_range.0, temperature_range.1, temperature_range.2);
+    
+    let total_runs = radii.len() * temperatures.len();
+    println!("Running parameter study with {} total configurations", total_runs);
+    
+    let progress_bar = ProgressBar::new(total_runs as u64);
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) {msg}")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+    
+    for (i, &radius) in radii.iter().enumerate() {
+        for (j, &temperature) in temperatures.iter().enumerate() {
+            let config_name = format!("R{:.2}_T{:.2}", radius, temperature);
+            progress_bar.set_message(format!("Running configuration {}", config_name));
+            
+            // Create and run simulation with these parameters
+            let mut sim = VortexSimulation::new(radius, base_height, temperature);
+            sim.run(steps);
+            
+            // Save results
+            let output_file = format!("{}/{}_{}.vtk", output_dir, i, j);
+            sim.save_results(&output_file);
+            
+            // Collect key metrics
+            let result = SimulationResult {
+                radius,
+                temperature, 
+                final_length: *sim.stats.total_length.last().unwrap_or(&0.0),
+                final_energy: *sim.stats.kinetic_energy.last().unwrap_or(&0.0),
+                reconnection_count: sim.stats.reconnection_count,
+            };
+            
+            results.push(result);
+            progress_bar.inc(1);
+        }
+    }
+    
+    progress_bar.finish();
+    results
+}
+
+fn generate_parameter_range(min: f64, max: f64, steps: usize) -> Vec<f64> {
+    let mut values = Vec::with_capacity(steps);
+    if steps <= 1 {
+        values.push(min);
+        return values;
+    }
+    
+    let step_size = (max - min) / ((steps - 1) as f64);
+    for i in 0..steps {
+        values.push(min + (i as f64) * step_size);
+    }
+    values
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationResult {
+    pub radius: f64,
+    pub temperature: f64,
+    pub final_length: f64,
+    pub final_energy: f64,
+    pub reconnection_count: usize,
 }
