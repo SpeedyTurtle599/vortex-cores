@@ -533,6 +533,42 @@ pub fn handle_reconnections(vortex_lines: &mut Vec<VortexLine>, reconnection_thr
         // Perform actual reconnection
         reconnect_vortex_lines(vortex_lines, i, pi, j, pj);
     }
+
+    // Validate vortex lines after reconnections
+    validate_vortex_lines(vortex_lines);
+}
+
+// Validate vortex lines and remove any degenerate elements
+fn validate_vortex_lines(vortex_lines: &mut Vec<VortexLine>) {
+    // Remove any degenerate lines (too few points)
+    vortex_lines.retain(|line| line.points.len() >= 4);
+    
+    // Check for NaN or Inf values
+    for line in vortex_lines {
+        for point in &mut line.points {
+            for i in 0..3 {
+                if !point.position[i].is_finite() {
+                    // Replace with a valid value to avoid crashes
+                    point.position[i] = 0.0;
+                }
+                if !point.tangent[i].is_finite() {
+                    // Fix invalid tangent
+                    point.tangent[i] = 0.0;
+                }
+            }
+            
+            // Ensure tangent is normalized
+            let magnitude = (point.tangent[0].powi(2) + point.tangent[1].powi(2) + point.tangent[2].powi(2)).sqrt();
+            if magnitude > 1e-10 {
+                point.tangent[0] /= magnitude;
+                point.tangent[1] /= magnitude;
+                point.tangent[2] /= magnitude;
+            } else {
+                // Default tangent if normalization fails
+                point.tangent = [1.0, 0.0, 0.0];
+            }
+        }
+    }
 }
 
 /// Actual reconnection algorithm that changes line connectivity
@@ -543,6 +579,17 @@ fn reconnect_vortex_lines(
     j: usize,
     pj: usize,
 ) {
+    // Safety check - make sure indices are valid
+    if i >= vortex_lines.len() || j >= vortex_lines.len() {
+        eprintln!("Warning: Invalid line indices in reconnection: {} and {}", i, j);
+        return;
+    }
+    
+    if pi >= vortex_lines[i].points.len() || pj >= vortex_lines[j].points.len() {
+        eprintln!("Warning: Invalid point indices in reconnection: {} and {}", pi, pj);
+        return;
+    }
+
     // Create four new segments from the two original lines
     let line_i = vortex_lines.remove(if i > j { i } else { i });
     let line_j = vortex_lines.remove(if i > j { j } else { j - 1 });
@@ -553,23 +600,23 @@ fn reconnect_vortex_lines(
     // Split second line at pj
     let (mut segment2a, mut segment2b) = split_line_at(&line_j, pj);
 
+    // Only add new lines if they have sufficient points
+    // This prevents degenerate lines that could cause issues
+    let min_points = 4; // Require at least 4 points for stability
+    
     // Reconnect: segment1a + segment2b, segment2a + segment1b
-    let mut new_line1 = VortexLine { points: Vec::new() };
-    let mut new_line2 = VortexLine { points: Vec::new() };
-
-    new_line1.points.append(&mut segment1a.points);
-    new_line1.points.append(&mut segment2b.points);
-
-    new_line2.points.append(&mut segment2a.points);
-    new_line2.points.append(&mut segment1b.points);
-
-    // Add the new reconnected lines
-    if new_line1.points.len() >= 3 {
+    if segment1a.points.len() >= min_points && segment2b.points.len() >= min_points {
+        let mut new_line1 = VortexLine { points: Vec::new() };
+        new_line1.points.append(&mut segment1a.points);
+        new_line1.points.append(&mut segment2b.points);
         update_tangent_vectors(&mut new_line1);
         vortex_lines.push(new_line1);
     }
 
-    if new_line2.points.len() >= 3 {
+    if segment2a.points.len() >= min_points && segment1b.points.len() >= min_points {
+        let mut new_line2 = VortexLine { points: Vec::new() };
+        new_line2.points.append(&mut segment2a.points);
+        new_line2.points.append(&mut segment1b.points);
         update_tangent_vectors(&mut new_line2);
         vortex_lines.push(new_line2);
     }
