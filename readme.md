@@ -76,11 +76,10 @@ Our simulation implements several advanced numerical techniques:
 
 The codebase is structured with several key modules:
 
-- `simulation.rs`: Core simulation logic and vortex representation
+- `simulation.rs`: Core simulation logic and vortex representation, output to VTK files
 - `physics.rs`: Physical constants and equations
 - `compute.rs`: GPU acceleration module
 - `extfields.rs`: External field implementations
-- `visualisation.rs`: Output generation for visualization tools
 
 ## Usage
 

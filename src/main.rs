@@ -1,7 +1,6 @@
 // Codebase modules
 mod simulation;
 mod physics;
-mod visualisation;
 mod extfields;
 mod compute;
 
