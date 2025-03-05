@@ -512,8 +512,8 @@ impl VortexSimulation {
     pub fn save_results(&self, filename: &str) {
         println!("Saving results to {}...", filename);
         
-        // Save VTK file for visualization
-        if let Err(e) = visualisation::save_vtk(self, filename) {
+        // Use the detailed VTK export instead of basic save_vtk
+        if let Err(e) = self.save_detailed_vtk(filename) {
             eprintln!("Error saving VTK file: {}", e);
         }
         
