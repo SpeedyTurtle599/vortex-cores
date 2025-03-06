@@ -46,6 +46,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_name("FILE")
                     .value_parser(clap::value_parser!(String))
                     .default_value("output.vtk"))
+                .arg(Arg::new("time_series")
+                    .long("time-series")
+                    .value_name("INTERVAL")
+                    .help("Save time series VTK files every N steps")
+                    .num_args(1))
+                .arg(Arg::new("time_series_name")
+                    .long("series-name")
+                    .value_name("NAME")
+                    .help("Base name for time series files")
+                    .default_value("vortex_time_series")
+                    .num_args(1))
                 .arg(Arg::new("load_checkpoint")
                     .short('l')
                     .long("load")
@@ -315,6 +326,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if wave_amplitude > 0.0 {
             simulation::log_message(&format!("Adding Kelvin waves with amplitude = {}", wave_amplitude));
             sim.add_kelvin_waves(wave_amplitude, 3.0);
+        }
+
+        // After your simulation is created
+        if let Some(interval_str) = matches.get_one::<String>("time_series") {
+            if let Ok(interval) = interval_str.parse::<usize>() {
+                let series_name = matches.get_one::<String>("time_series_name").unwrap();
+                simulation::log_message(&format!("Enabling time series output every {} steps with base name '{}'", interval, series_name));
+                sim.save_time_series_vtk(series_name, interval);
+            }
         }
         
         // Run the simulation

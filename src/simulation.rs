@@ -4,7 +4,9 @@ use crate::extfields::ExternalField;
 use crate::compute::ComputeCore;
 use nalgebra::Vector3;
 use std::vec::Vec;
+use std::fs;
 use std::fs::File;
+use std::path::Path;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
@@ -35,6 +37,7 @@ pub struct VortexSimulation {
     pub time: f64,
     pub external_field: Option<ExternalFieldParams>,
     pub stats: SimulationStats,
+    pub time_series_config: Option<TimeSeriesConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +65,13 @@ pub struct SimulationStats {
     pub kinetic_energy: Vec<f64>,
     pub reconnection_count: usize,
     pub time_points: Vec<f64>,
+}
+// Add this after the other structs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeSeriesConfig {
+    pub base_filename: String,
+    pub interval: usize,
+    pub frame_count: usize,
 }
 
 // Global progress bar for coordinated output
@@ -207,6 +217,7 @@ impl VortexSimulation {
             time: 0.0,
             external_field: None,
             stats: SimulationStats::default(),
+            time_series_config: None,
         }
     }
 
@@ -292,11 +303,6 @@ impl VortexSimulation {
         for step in 0..steps {
             progress_bar.set_position(step as u64);
             
-            // if step % 10 == 0 {
-            //     progress_bar.set_message(format!("Total length: {:.4} cm", 
-            //         self.stats.total_length.last().unwrap_or(&0.0)));
-            // }
-            
             // Calculate vortex dynamics
             self.evolve_vortices(dt);
             
@@ -314,6 +320,21 @@ impl VortexSimulation {
             // Update statistics
             if step % 10 == 0 {
                 self.update_statistics_with_progress_bar(&progress_bar);
+            }
+
+            // Save time series frame if configured
+            if let Some(config) = &self.time_series_config {
+                if step % config.interval == 0 {
+                    let frame_count = config.frame_count;
+                    // progress_bar.set_message(format!("Saving frame {} at t={:.3}", frame_count, self.time));
+                    if let Err(e) = self.export_time_series_frame(frame_count) {
+                        eprintln!("Error saving time series frame: {}", e);
+                    }
+                    // Update the frame count after using it
+                    if let Some(config) = &mut self.time_series_config {
+                        config.frame_count += 1;
+                    }
+                }
             }
             
             // Save checkpoint
@@ -897,11 +918,27 @@ impl VortexSimulation {
             ));
         }
     }
-    
+
+    fn ensure_directory_exists(path: &str) -> io::Result<()> {
+        let path = Path::new(path);
+        if !path.exists() {
+            fs::create_dir_all(path)?;
+        }
+        Ok(())
+    }
+
     // Save checkpoint for resuming simulation later
     pub fn save_checkpoint(&self, filename: &str) -> io::Result<()> {
-        let file = File::create(filename)?;
+        // Ensure checkpoints directory exists
+        Self::ensure_directory_exists("checkpoints")?;
+        
+        // Prepend the directory to the filename
+        let checkpoint_path = format!("checkpoints/{}", filename);
+        
+        // Create the file and write the data
+        let file = File::create(&checkpoint_path)?;
         serde_json::to_writer(file, self)?;
+        
         Ok(())
     }
     
@@ -913,22 +950,369 @@ impl VortexSimulation {
     }
     
     // Save simulation results
-    pub fn save_results(&self, filename: &str) {        
+    pub fn save_results(&self, filename: &str) {
+        // Extract the base filename without any directory parts
+        let base_filename = Path::new(filename).file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+        
         // Use the detailed VTK export instead of basic save_vtk
-        if let Err(e) = self.save_detailed_vtk(filename) {
+        if let Err(e) = self.save_detailed_vtk(&base_filename) {
             eprintln!("Error saving VTK file: {}", e);
         }
         
         // Save statistics to JSON
-        let stats_filename = filename.replace(".vtk", "_stats.json");
+        let stats_filename = base_filename.replace(".vtk", "_stats.json");
         if let Err(e) = self.save_statistics(&stats_filename) {
             eprintln!("Error saving statistics: {}", e);
         }
     }
+
+    // New method to save results for time series visualization
+    pub fn save_time_series_vtk(&mut self, base_filename: &str, interval: usize) {
+        // Store this function to be called during simulation
+        self.time_series_config = Some(TimeSeriesConfig {
+            base_filename: base_filename.to_string(),
+            interval,
+            frame_count: 0,
+        });
+    }
+    
+    // Helper method to export a single frame of the time series
+    fn export_time_series_frame(&self, frame_number: usize) -> io::Result<()> {
+        if let Some(config) = &self.time_series_config {
+            // Ensure visualization directory exists
+            Self::ensure_directory_exists("visualization")?;
+            
+            // Create filename with frame number
+            let filename = format!("visualization/{}_{:04}.vtk", config.base_filename, frame_number);
+            
+            // Save VTK with time field explicitly set - use the direct path here
+            let mut file = File::create(&filename)?;
+            
+            // VTK header
+            writeln!(file, "# vtk DataFile Version 3.0")?;
+            writeln!(file, "Superfluid Helium Vortex Tangle Simulation t={:.4}", self.time)?;
+            writeln!(file, "ASCII")?;
+            writeln!(file, "DATASET UNSTRUCTURED_GRID")?;
+            
+            // Important: Add FIELD data BEFORE other data to ensure proper loading
+            writeln!(file, "FIELD FieldData 1")?;
+            writeln!(file, "TIME 1 1 double")?;
+            writeln!(file, "{}", self.time)?;
+            
+            // Write all the geometric and scalar data
+            self.write_vtk_data(&mut file)?;
+            
+            // Also generate a ParaView state file for the first frame
+            if frame_number == 0 {
+                self.generate_paraview_state(&format!("visualization/{}", config.base_filename))?;
+            }
+        }
+        Ok(())
+    }
+    
+    pub fn save_detailed_vtk(&self, filename: &str) -> io::Result<()> {
+        // Simply call save_detailed_vtk_with_time with the current simulation time
+        self.save_detailed_vtk_with_time(filename, self.time)
+    }
+    
+    fn save_detailed_vtk_with_time(&self, filename: &str, time: f64) -> io::Result<()> {
+        // Ensure visualization directory exists
+        Self::ensure_directory_exists("visualization")?;
+        
+        // Extract the base filename without any directory parts
+        let base_filename = Path::new(filename).file_name()
+                                 .unwrap_or_default()
+                                 .to_string_lossy()
+                                 .to_string();
+        
+        // Prepend the directory to the filename
+        let vis_path = format!("visualization/{}", base_filename);
+        
+        let mut file = File::create(&vis_path)?;
+        
+        // VTK header
+        writeln!(file, "# vtk DataFile Version 3.0")?;
+        writeln!(file, "Superfluid Helium Vortex Tangle Simulation t={:.4}", time)?;
+        writeln!(file, "ASCII")?;
+        writeln!(file, "DATASET UNSTRUCTURED_GRID")?;
+        
+        // Important: Add FIELD data BEFORE other data to ensure proper loading
+        writeln!(file, "FIELD FieldData 1")?;
+        writeln!(file, "TIME 1 1 double")?;
+        writeln!(file, "{}", time)?;
+        
+        // Write all the geometric and scalar data
+        self.write_vtk_data(&mut file)?;
+        
+        Ok(())
+    }
+    
+    // Helper method to write the VTK data - remove TIME field from this method
+    fn write_vtk_data(&self, file: &mut File) -> io::Result<()> {
+        // Count total points
+        let mut total_points = 0;
+        for line in &self.vortex_lines {
+            total_points += line.points.len();
+        }
+        
+        // Write points
+        writeln!(file, "POINTS {} float", total_points)?;
+        for line in &self.vortex_lines {
+            for point in &line.points {
+                writeln!(file, "{} {} {}", point.position[0], point.position[1], point.position[2])?;
+            }
+        }
+        
+        // Write cells (lines)
+        let mut total_cells = 0;
+        let mut total_list_size = 0;
+        for line in &self.vortex_lines {
+            let n_points = line.points.len();
+            if n_points > 1 {  // Only create cells if there are at least 2 points
+                total_cells += n_points - 1;  // segments between points
+                total_list_size += (n_points - 1) * 3;  // 3 values per segment (type + 2 points)
+            }
+        }
+        
+        writeln!(file, "CELLS {} {}", total_cells, total_list_size)?;
+        
+        let mut point_offset = 0;
+        for line in &self.vortex_lines {
+            let n_points = line.points.len();
+            for i in 0..n_points-1 {
+                writeln!(file, "2 {} {}", point_offset + i, point_offset + i + 1)?;
+            }
+            point_offset += n_points;
+        }
+        
+        // Write cell types (type 3 = line)
+        writeln!(file, "CELL_TYPES {}", total_cells)?;
+        for _ in 0..total_cells {
+            writeln!(file, "3")?;
+        }
+        
+        // Only write point data if there are points
+        if total_points > 0 {
+            writeln!(file, "POINT_DATA {}", total_points)?;
+            
+            // Tangent vectors
+            writeln!(file, "VECTORS tangent float")?;
+            for line in &self.vortex_lines {
+                for point in &line.points {
+                    writeln!(file, "{} {} {}", point.tangent[0], point.tangent[1], point.tangent[2])?;
+                }
+            }
+            
+            // Calculate and write local curvature
+            writeln!(file, "SCALARS curvature float 1")?;
+            writeln!(file, "LOOKUP_TABLE default")?;
+            
+            for line in &self.vortex_lines {
+                let n_points = line.points.len();
+                for i in 0..n_points {
+                    let prev = (i + n_points - 1) % n_points;
+                    let next = (i + 1) % n_points;
+                    
+                    let prev_pos = Vector3::new(
+                        line.points[prev].position[0],
+                        line.points[prev].position[1],
+                        line.points[prev].position[2]
+                    );
+                    
+                    let pos = Vector3::new(
+                        line.points[i].position[0],
+                        line.points[i].position[1],
+                        line.points[i].position[2]
+                    );
+                    
+                    let next_pos = Vector3::new(
+                        line.points[next].position[0],
+                        line.points[next].position[1],
+                        line.points[next].position[2]
+                    );
+                    
+                    // Calculate segments
+                    let segment1 = pos - prev_pos;
+                    let segment2 = next_pos - pos;
+                    
+                    let t1 = segment1.normalize();
+                    let t2 = segment2.normalize();
+                    
+                    // Calculate binormal (t1 × t2)
+                    let binormal = t1.cross(&t2);
+                    let bin_mag = binormal.norm();
+                    
+                    // Calculate curvature approximation
+                    let dot = t1.dot(&t2);
+                    let curvature = bin_mag / (1.0 + dot);
+                    
+                    writeln!(file, "{}", curvature)?;
+                }
+            }
+            
+            // Add velocity magnitude data
+            writeln!(file, "SCALARS velocity_mag float 1")?;
+            writeln!(file, "LOOKUP_TABLE default")?;
+            
+            // Get external field for velocity calculation
+            let ext_field = self.get_external_field();
+            
+            for line in &self.vortex_lines {
+                for point in &line.points {
+                    // Convert position to Vector3
+                    let pos = Vector3::new(
+                        point.position[0],
+                        point.position[1],
+                        point.position[2]
+                    );
+                    
+                    // Calculate LIA velocity (simplified estimate)
+                    let curvature = 0.1; // This should be calculated properly
+                    let lia_vel = 9.97e-4 * 10.0 * curvature; // κ * β * curvature
+                    
+                    // Add external velocity if any
+                    let mut total_vel = lia_vel;
+                    
+                    if let Some(field) = &ext_field {
+                        let ext_vel = field.velocity_at(&pos, self.time);
+                        total_vel += ext_vel.norm();
+                    }
+                    
+                    writeln!(file, "{}", total_vel)?;
+                }
+            }
+            
+            // Add temperature data if relevant
+            if self.temperature > 0.01 {
+                writeln!(file, "SCALARS temperature float 1")?;
+                writeln!(file, "LOOKUP_TABLE default")?;
+                
+                // In a real simulation, temperature might vary in space
+                // Here we use a constant value for simplicity
+                for _ in 0..total_points {
+                    writeln!(file, "{}", self.temperature)?;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    // Generate a simple ParaView state file for easy loading
+    fn generate_paraview_state(&self, base_filename: &str) -> io::Result<()> {
+        // Create a README file with instructions
+        let readme_path = format!("{}_README.txt", base_filename);
+        let mut file = File::create(&readme_path)?;
+        
+        // Write README contents
+        writeln!(file, "# Vortex Simulation Time Series Visualization")?;
+        writeln!(file, "==================================")?;
+        writeln!(file, "")?;
+        writeln!(file, "## Loading in ParaView")?;
+        // ... rest of README content
+
+        // Create a Python script for advanced users
+        let py_path = format!("{}_load.py", base_filename);
+        let mut py_file = File::create(&py_path)?;
+        
+        // Write Python script contents
+        writeln!(py_file, "# ParaView Python script to load the time series")?;
+        writeln!(py_file, "import os")?;
+        writeln!(py_file, "import glob")?;
+        writeln!(py_file, "from paraview.simple import *")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Disable automatic rendering during script execution")?;
+        writeln!(py_file, "paraview.simple._DisableFirstRenderCameraReset()")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Close any existing rendering views")?;
+        writeln!(py_file, "try:")?;
+        writeln!(py_file, "    Disconnect()")?;
+        writeln!(py_file, "    Connect()")?;
+        writeln!(py_file, "except:")?;
+        writeln!(py_file, "    pass")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Get the directory of this script")?;
+        writeln!(py_file, "script_dir = os.path.dirname(os.path.abspath(__file__))")?;
+        writeln!(py_file, "file_pattern = os.path.join(script_dir, '{}_*.vtk')", base_filename)?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Find all matching files and sort them")?;
+        writeln!(py_file, "files = sorted(glob.glob(file_pattern))")?;
+        writeln!(py_file, "if not files:")?;
+        writeln!(py_file, "    print(f\"Error: No files found matching {{file_pattern}}\")")?;
+        writeln!(py_file, "    exit(1)")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "print(f\"Loading {{len(files)}} time series files...\")")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Load the data")?;
+        writeln!(py_file, "reader = LegacyVTKReader(registrationName=\"VortexTimeSeriesReader\", FileNames=files)")?;
+        writeln!(py_file, "reader.UpdatePipeline()")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Create a default render view")?;
+        writeln!(py_file, "renderView = CreateView('RenderView')")?;
+        writeln!(py_file, "renderView.ViewSize = [1000, 800]")?;
+        writeln!(py_file, "renderView.AxesGrid = 'Grid Axes 3D Actor'")?;
+        writeln!(py_file, "renderView.CenterOfRotation = [0.0, 0.0, {:.1}]", self.height/2.0)?;
+        writeln!(py_file, "renderView.StereoType = 0")?;
+        writeln!(py_file, "renderView.CameraPosition = [0.0, -3.0 * {:.1}, {:.1}]", self.radius, self.height/2.0)?;
+        writeln!(py_file, "renderView.CameraFocalPoint = [0.0, 0.0, {:.1}]", self.height/2.0)?;
+        writeln!(py_file, "renderView.CameraViewUp = [0.0, 0.0, 1.0]")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Create a nice visualization")?;
+        writeln!(py_file, "tube = Tube(Input=reader, registrationName=\"VortexTubes\")")?;
+        writeln!(py_file, "tube.Radius = {:.3}", self.radius * 0.02)?;
+        writeln!(py_file, "tube.NumberOfSides = 12")?;
+        writeln!(py_file, "tube.CappingOn = 0")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Display properties")?;
+        writeln!(py_file, "tubeDisplay = Show(tube, renderView, 'GeometryRepresentation')")?;
+        writeln!(py_file, "ColorBy(tubeDisplay, ('POINTS', 'curvature'))")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Color scale")?;
+        writeln!(py_file, "curvatureLUT = GetColorTransferFunction('curvature')")?;
+        writeln!(py_file, "curvatureLUT.RescaleTransferFunction(0, 10.0)")?;
+        writeln!(py_file, "try:")?;
+        writeln!(py_file, "    curvatureLUT.ApplyPreset('Viridis (matplotlib)', True)")?;
+        writeln!(py_file, "except:")?;
+        writeln!(py_file, "    pass")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Show color legend")?;
+        writeln!(py_file, "curvatureLUTColorBar = GetScalarBar(curvatureLUT, renderView)")?;
+        writeln!(py_file, "curvatureLUTColorBar.Title = 'Curvature'")?;
+        writeln!(py_file, "curvatureLUTColorBar.ComponentTitle = ''")?;
+        writeln!(py_file, "tubeDisplay.SetScalarBarVisibility(renderView, True)")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Set up animation")?;
+        writeln!(py_file, "animationScene = GetAnimationScene()")?;
+        writeln!(py_file, "animationScene.PlayMode = 'Snap To TimeSteps'")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "# Reset view to fit data")?;
+        writeln!(py_file, "Render()")?;
+        writeln!(py_file, "ResetCamera()")?;
+        writeln!(py_file, "")?;
+        writeln!(py_file, "print(\"Time series loaded successfully. Press Play in the animation controls to view.\")")?;
+        
+        Ok(())
+    }
     
     // Save detailed statistics
+    // Save detailed statistics
     fn save_statistics(&self, filename: &str) -> io::Result<()> {
-        let file = File::create(filename)?;
+        // Ensure checkpoints directory exists
+        Self::ensure_directory_exists("checkpoints")?;
+        
+        // Extract the base filename without any directory parts
+        let base_filename = Path::new(filename).file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+        
+        // Prepend the directory to the filename
+        let stats_path = format!("checkpoints/{}", base_filename);
+        
+        let file = File::create(&stats_path)?;
         serde_json::to_writer_pretty(file, &self.stats)?;
         Ok(())
     }
@@ -965,167 +1349,9 @@ impl VortexSimulation {
             physics::add_kelvin_wave(
                 line,
                 amplitude,
-                wavelengths // Now correctly passing a usize
+                wavelengths
             );
         }
-    }
-    
-    // Generate a VTK file visualizing the vortex tangle with additional attributes
-    pub fn save_detailed_vtk(&self, filename: &str) -> io::Result<()> {
-        // This is a more advanced VTK export that includes various scalar fields
-        // like local curvature, velocity, etc.
-        
-        let mut file = File::create(filename)?;
-        
-        // VTK header
-        writeln!(file, "# vtk DataFile Version 3.0")?;
-        writeln!(file, "Superfluid Helium Vortex Tangle Simulation")?;
-        writeln!(file, "ASCII")?;
-        writeln!(file, "DATASET UNSTRUCTURED_GRID")?;
-        
-        // Count total points
-        let mut total_points = 0;
-        for line in &self.vortex_lines {
-            total_points += line.points.len();
-        }
-        
-        // Write points
-        writeln!(file, "POINTS {} float", total_points)?;
-        for line in &self.vortex_lines {
-            for point in &line.points {
-                writeln!(file, "{} {} {}", point.position[0], point.position[1], point.position[2])?;
-            }
-        }
-        
-        // Write cells (lines)
-        let mut total_cells = 0;
-        let mut total_list_size = 0;
-        for line in &self.vortex_lines {
-            let n_points = line.points.len();
-            total_cells += n_points - 1;  // segments between points
-            total_list_size += (n_points - 1) * 3;  // 3 values per segment (type + 2 points)
-        }
-        
-        writeln!(file, "CELLS {} {}", total_cells, total_list_size)?;
-        
-        let mut point_offset = 0;
-        for line in &self.vortex_lines {
-            let n_points = line.points.len();
-            for i in 0..n_points-1 {
-                writeln!(file, "2 {} {}", point_offset + i, point_offset + i + 1)?;
-            }
-            point_offset += n_points;
-        }
-        
-        // Write cell types (type 3 = line)
-        writeln!(file, "CELL_TYPES {}", total_cells)?;
-        for _ in 0..total_cells {
-            writeln!(file, "3")?;
-        }
-        
-        // Write point data
-        writeln!(file, "POINT_DATA {}", total_points)?;
-        
-        // Tangent vectors
-        writeln!(file, "VECTORS tangent float")?;
-        for line in &self.vortex_lines {
-            for point in &line.points {
-                writeln!(file, "{} {} {}", point.tangent[0], point.tangent[1], point.tangent[2])?;
-            }
-        }
-        
-        // Calculate and write local curvature
-        writeln!(file, "SCALARS curvature float 1")?;
-        writeln!(file, "LOOKUP_TABLE default")?;
-        
-        for line in &self.vortex_lines {
-            let n_points = line.points.len();
-            for i in 0..n_points {
-                let prev = (i + n_points - 1) % n_points;
-                let next = (i + 1) % n_points;
-                
-                let prev_pos = Vector3::new(
-                    line.points[prev].position[0],
-                    line.points[prev].position[1],
-                    line.points[prev].position[2]
-                );
-                
-                let pos = Vector3::new(
-                    line.points[i].position[0],
-                    line.points[i].position[1],
-                    line.points[i].position[2]
-                );
-                
-                let next_pos = Vector3::new(
-                    line.points[next].position[0],
-                    line.points[next].position[1],
-                    line.points[next].position[2]
-                );
-                
-                // Calculate segments
-                let segment1 = pos - prev_pos;
-                let segment2 = next_pos - pos;
-                
-                let t1 = segment1.normalize();
-                let t2 = segment2.normalize();
-                
-                // Calculate binormal (t1 × t2)
-                let binormal = t1.cross(&t2);
-                let bin_mag = binormal.norm();
-                
-                // Calculate curvature approximation
-                let dot = t1.dot(&t2);
-                let curvature = bin_mag / (1.0 + dot);
-                
-                writeln!(file, "{}", curvature)?;
-            }
-        }
-        
-        // Add velocity magnitude data
-        writeln!(file, "SCALARS velocity_mag float 1")?;
-        writeln!(file, "LOOKUP_TABLE default")?;
-        
-        // Get external field for velocity calculation
-        let ext_field = self.get_external_field();
-        
-        for line in &self.vortex_lines {
-            for point in &line.points {
-                // Convert position to Vector3
-                let pos = Vector3::new(
-                    point.position[0],
-                    point.position[1],
-                    point.position[2]
-                );
-                
-                // Calculate LIA velocity (simplified estimate)
-                let curvature = 0.1; // This should be calculated properly
-                let lia_vel = 9.97e-4 * 10.0 * curvature; // κ * β * curvature
-                
-                // Add external velocity if any
-                let mut total_vel = lia_vel;
-                
-                if let Some(field) = &ext_field {
-                    let ext_vel = field.velocity_at(&pos, self.time);
-                    total_vel += ext_vel.norm();
-                }
-                
-                writeln!(file, "{}", total_vel)?;
-            }
-        }
-        
-        // Add temperature data if relevant
-        if self.temperature > 0.01 {
-            writeln!(file, "SCALARS temperature float 1")?;
-            writeln!(file, "LOOKUP_TABLE default")?;
-            
-            // In a real simulation, temperature might vary in space
-            // Here we use a constant value for simplicity
-            for _ in 0..total_points {
-                writeln!(file, "{}", self.temperature)?;
-            }
-        }
-        
-        Ok(())
     }
 }
 
