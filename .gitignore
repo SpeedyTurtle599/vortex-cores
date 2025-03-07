@@ -3,3 +3,4 @@
 *.vtk
 /visualization
 /checkpoints
+*.DS_STORE
