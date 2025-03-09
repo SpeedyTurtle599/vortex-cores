@@ -526,8 +526,24 @@ pub fn handle_reconnections(vortex_lines: &mut Vec<VortexLine>, reconnection_thr
         }
     }
 
-    // Process reconnections (starting from the end to avoid indexing issues)
-    reconnections.sort_by(|a, b| b.cmp(a));
+    // Sort candidates by line indices in descending order to safely process removals
+    reconnections.sort_unstable_by(|a, b| {
+        // Sort by max line index first (descending)
+        let max_a = a.0.max(a.2);
+        let max_b = b.0.max(b.2);
+        max_b.cmp(&max_a).then_with(|| {
+            // Then by min line index (descending)
+            let min_a = a.0.min(a.2);
+            let min_b = b.0.min(b.2);
+            min_b.cmp(&min_a)
+        })
+    });
+
+    println!("Sorted candidates for safe processing:");
+    for (i, (l1, p1, l2, p2)) in reconnections.iter().enumerate() {
+        println!("  Candidate {}: Line {}, Point {} with Line {}, Point {}", 
+                i+1, l1, p1, l2, p2);
+}
 
     for (i, pi, j, pj) in reconnections {
         // Perform actual reconnection
@@ -551,8 +567,32 @@ pub fn process_reconnections(
     // Debug output
     println!("Processing {} reconnection candidates", reconnection_candidates.len());
     
+    // Sort candidates by line indices in descending order
+    let mut sorted_candidates = reconnection_candidates.clone();
+    sorted_candidates.sort_unstable_by(|a, b| {
+        // Sort by max line index first (descending)
+        let max_a = a.0.max(a.2);
+        let max_b = b.0.max(b.2);
+        max_b.cmp(&max_a).then_with(|| {
+            // Then by min line index (descending)
+            let min_a = a.0.min(a.2);
+            let min_b = b.0.min(b.2);
+            min_b.cmp(&min_a)
+        })
+    });
+    
+    // Keep track of which lines have been processed
+    use std::collections::HashSet;
+    let mut processed_lines = HashSet::new();
+    
     // Process each reconnection candidate
-    for (line_idx1, point_idx1, line_idx2, point_idx2) in reconnection_candidates {
+    for (line_idx1, point_idx1, line_idx2, point_idx2) in sorted_candidates {
+        // Skip if either line has already been processed in this batch
+        if processed_lines.contains(&line_idx1) || processed_lines.contains(&line_idx2) {
+            println!("Skip: Line already involved in earlier reconnection");
+            continue;
+        }
+        
         // Skip if indices are no longer valid due to previous reconnections
         if line_idx1 >= vortex_lines.len() || line_idx2 >= vortex_lines.len() {
             println!("Skip: Line indices out of bounds ({}, {})", line_idx1, line_idx2);
@@ -599,10 +639,13 @@ pub fn process_reconnections(
         
         println!("Reconnection candidate: dist={:.4}, dot={:.4}", dist, dot);
         
-        // Only perform reconnection if tangents are anti-parallel (dot product negative)
-        // and points are close enough
-        let reconnection_threshold = 0.01; // Should match your threshold from calling code
+        // Only perform reconnection if criteria are met
+        let reconnection_threshold = 0.025;
         if dist < reconnection_threshold && dot < -0.3 {
+            // Mark these lines as processed BEFORE reconnection
+            processed_lines.insert(line_idx1);
+            processed_lines.insert(line_idx2);
+            
             // Perform the actual reconnection
             reconnect_vortex_lines(vortex_lines, line_idx1, point_idx1, line_idx2, point_idx2);
             println!("Performed reconnection between lines {} and {}", line_idx1, line_idx2);

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
+use nalgebra::Vector3;
 use bytemuck::{Pod, Zeroable};
 use serde::{Serialize, Deserialize};
 use crate::simulation::{VortexLine, VortexPoint, ExternalFieldParams};
@@ -534,7 +535,7 @@ impl ComputeCore {
         let candidates_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Reconnection Candidates Buffer"),
             size: (params.max_candidates as usize * std::mem::size_of::<ReconnectionCandidate>() + 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
         
@@ -676,6 +677,7 @@ impl ComputeCore {
             // Dispatch enough workgroups to process total number of points
             let total_points = points_data.len();
             let workgroup_count = ((total_points as f64) / 256.0).ceil() as u32;
+            // println!("Dispatching {} workgroups for {} points", workgroup_count, total_points);
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         
@@ -688,7 +690,16 @@ impl ComputeCore {
             mapped_at_creation: false,
         });
         
-        // Copy results to staging buffer
+        // Copy atomic counter to candidates buffer
+        encoder.copy_buffer_to_buffer(
+            &counter_buffer,
+            0,
+            &candidates_buffer, 
+            0, 
+            std::mem::size_of::<u32>() as u64
+        );
+        
+        // Then copy results to staging buffer as before
         encoder.copy_buffer_to_buffer(
             &candidates_buffer, 
             0, 
@@ -716,12 +727,92 @@ impl ComputeCore {
                 params.max_candidates as usize
             );
             
+            // Debug output to verify threshold
+            // println!("Reconnection detector: threshold={}, found {} candidates", threshold, count);
+            
             // Extract candidates
             let candidates: Vec<ReconnectionCandidate> = bytemuck::cast_slice(&data[4..])
                 .iter()
                 .take(count)
                 .copied()
                 .collect();
+            
+            // Print the first few distances to see if we're close to threshold
+            if count == 0 {
+                // Do a simple check of raw positions to see if any are close
+                for (i, line1) in vortex_lines.iter().enumerate() {
+                    for (j, line2) in vortex_lines.iter().enumerate() {
+                        if i >= j { continue; }  // Only check unique pairs
+                        
+                        // Check first few points of each line
+                        for p1 in line1.points.iter().take(10) {
+                            for p2 in line2.points.iter().take(10) {
+                                let dx = p1.position[0] - p2.position[0];
+                                let dy = p1.position[1] - p2.position[1];
+                                let dz = p1.position[2] - p2.position[2];
+                                let dist = (dx*dx + dy*dy + dz*dz).sqrt();
+                                
+                                if dist < threshold * 3.0 {
+                                    println!("Close points: lines {}/{}, dist={}, threshold={}", i, j, dist, threshold);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // // Attempt debugging of distance parameter in reconnection candidates
+            // println!("DEBUG: Checking distances between vortex points");
+            // let mut min_dist = f64::MAX;
+            // let mut min_i = 0;
+            // let mut min_j = 0;
+            // let mut min_pi = 0;
+            // let mut min_pj = 0;
+
+            // for (i, line1) in vortex_lines.iter().enumerate() {
+            //     for (j, line2) in vortex_lines.iter().enumerate() {
+            //         if i == j { continue; }
+                    
+            //         for (pi, point1) in line1.points.iter().enumerate() {
+            //             for (pj, point2) in line2.points.iter().enumerate() {
+            //                 let dx = point1.position[0] - point2.position[0];
+            //                 let dy = point1.position[1] - point2.position[1];
+            //                 let dz = point1.position[2] - point2.position[2];
+            //                 let dist = (dx*dx + dy*dy + dz*dz).sqrt();
+                            
+            //                 if dist < min_dist {
+            //                     min_dist = dist;
+            //                     min_i = i;
+            //                     min_j = j;
+            //                     min_pi = pi;
+            //                     min_pj = pj;
+            //                 }
+            //             }
+            //         }
+            //     }
+            // }
+
+            // println!("Minimum distance between any two points: {} (threshold: {})", 
+            //         min_dist, threshold);
+            // println!("Closest points: line {}, point {} and line {}, point {}", 
+            //         min_i, min_pi, min_j, min_pj);
+
+            // // Attempt debugging of dot product parameter in reconnection candidates
+            // // Check dot product of the closest points
+            // let t1 = Vector3::new(
+            //     vortex_lines[min_i].points[min_pi].tangent[0],
+            //     vortex_lines[min_i].points[min_pi].tangent[1],
+            //     vortex_lines[min_i].points[min_pi].tangent[2]
+            // );
+
+            // let t2 = Vector3::new(
+            //     vortex_lines[min_j].points[min_pj].tangent[0],
+            //     vortex_lines[min_j].points[min_pj].tangent[1],
+            //     vortex_lines[min_j].points[min_pj].tangent[2]
+            // );
+
+            // let dot_product = t1.dot(&t2);
+            // println!("Dot product between closest points: {} (threshold: -0.3)", dot_product);
             
             // Convert to result format and apply both distance and dot product filters
             let mut result: Vec<(usize, usize, usize, usize)> = candidates.iter()

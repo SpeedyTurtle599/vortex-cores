@@ -378,7 +378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Save the results
         sim.save_results(output);
         
-        println!("\nResumed simulation complete! Results saved to {}", output);
+        println!("\nResumed results saved to {}", output);
     }
     // Handle parameter study
     else if let Some(matches) = matches.subcommand_matches("study") {

@@ -364,7 +364,7 @@ impl VortexSimulation {
 
     // Add these new methods for handling progress bar updates
     fn handle_reconnections_with_progress_bar(&mut self, progress_bar: &ProgressBar) {
-        let reconnection_threshold = 0.01 * self.radius;
+        let reconnection_threshold = 0.05 * self.radius;
         let previous_line_count = self.vortex_lines.len();
         let previous_total_length = physics::calculate_total_length(&self.vortex_lines);
         
@@ -436,7 +436,137 @@ impl VortexSimulation {
         }
     }
 
-    fn initialize_vortices(&mut self) {        
+    fn initialize_vortices(&mut self) {
+        // Use the cube configuration instead of the original setup
+        self.initialize_cube_vortices();
+        
+        // If temperature is high, add some random vortex filaments
+        if self.temperature > 1.5 {
+            self.add_random_vortex_filaments(3 + (self.temperature as usize));
+        }
+    }
+
+    pub fn initialize_cube_vortices(&mut self) {
+        // Clear any existing vortices
+        self.vortex_lines.clear();
+        
+        // Use a fraction of the container radius for the cube size
+        let cube_size = self.radius * 0.8;
+        
+        // Calculate ring radius - slightly larger than half the cube face
+        let ring_radius = cube_size * 0.55;
+        
+        // Center of the container
+        let center_x = 0.0;
+        let center_y = 0.0;
+        let center_z = self.height / 2.0;
+        
+        // 1. Top face: XY-plane, Z+
+        let top_center = [center_x, center_y, center_z + cube_size/2.0];
+        let mut top_ring = self.create_vortex_ring(ring_radius, top_center);
+        
+        // 2. Bottom face: XY-plane, Z-
+        let bottom_center = [center_x, center_y, center_z - cube_size/2.0];
+        let mut bottom_ring = self.create_vortex_ring(ring_radius, bottom_center);
+        // Reverse the orientation of bottom ring to create a vortex dipole with the top ring
+        for point in &mut bottom_ring.points {
+            point.tangent[0] *= -1.0;
+            point.tangent[1] *= -1.0;
+        }
+        
+        // 3. Left face: YZ-plane, X-
+        let left_center = [center_x - cube_size/2.0, center_y, center_z];
+        let mut left_ring = self.create_rotated_vortex_ring(ring_radius, left_center, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+        
+        // 4. Right face: YZ-plane, X+
+        let right_center = [center_x + cube_size/2.0, center_y, center_z];
+        let mut right_ring = self.create_rotated_vortex_ring(ring_radius, right_center, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+        // Reverse the orientation to create a vortex dipole with the left ring
+        for point in &mut right_ring.points {
+            point.tangent[0] *= -1.0;
+            point.tangent[1] *= -1.0;
+            point.tangent[2] *= -1.0;
+        }
+        
+        // 5. Front face: XZ-plane, Y+
+        let front_center = [center_x, center_y + cube_size/2.0, center_z];
+        let mut front_ring = self.create_rotated_vortex_ring(ring_radius, front_center, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        
+        // 6. Back face: XZ-plane, Y-
+        let back_center = [center_x, center_y - cube_size/2.0, center_z];
+        let mut back_ring = self.create_rotated_vortex_ring(ring_radius, back_center, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        // Reverse the orientation to create a vortex dipole with the front ring
+        for point in &mut back_ring.points {
+            point.tangent[0] *= -1.0;
+            point.tangent[1] *= -1.0;
+            point.tangent[2] *= -1.0;
+        }
+        
+        // Add the rings to the simulation
+        self.vortex_lines.push(top_ring);
+        self.vortex_lines.push(bottom_ring);
+        self.vortex_lines.push(left_ring);
+        self.vortex_lines.push(right_ring);
+        self.vortex_lines.push(front_ring);
+        self.vortex_lines.push(back_ring);
+        
+        // Add small perturbations to enhance probability of reconnection
+        for line in &mut self.vortex_lines {
+            physics::add_kelvin_wave(line, ring_radius * 0.05, 2);
+        }
+    }
+    
+    // Helper method to create rings with arbitrary orientations
+    fn create_rotated_vortex_ring(&self, ring_radius: f64, center: [f64; 3], x_axis: [f64; 3], y_axis: [f64; 3]) -> VortexLine {
+        let num_points = 100;
+        let mut points = Vec::with_capacity(num_points);
+        
+        // Normalize x-axis vector
+        let x_norm = (x_axis[0]*x_axis[0] + x_axis[1]*x_axis[1] + x_axis[2]*x_axis[2]).sqrt();
+        let x_axis = [x_axis[0]/x_norm, x_axis[1]/x_norm, x_axis[2]/x_norm];
+        
+        // Calculate z-axis as cross product
+        let z_axis = [
+            x_axis[1]*y_axis[2] - x_axis[2]*y_axis[1],
+            x_axis[2]*y_axis[0] - x_axis[0]*y_axis[2],
+            x_axis[0]*y_axis[1] - x_axis[1]*y_axis[0],
+        ];
+        
+        // Normalize z-axis
+        let z_norm = (z_axis[0]*z_axis[0] + z_axis[1]*z_axis[1] + z_axis[2]*z_axis[2]).sqrt();
+        let z_axis = [z_axis[0]/z_norm, z_axis[1]/z_norm, z_axis[2]/z_norm];
+        
+        // Re-compute y-axis to ensure orthogonality
+        let y_axis = [
+            z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
+            z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0],
+        ];
+        
+        // Create points around the ring
+        for i in 0..num_points {
+            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (num_points as f64);
+            
+            // Compute the position in the rotated coordinates
+            let x = center[0] + ring_radius * (theta.cos() * x_axis[0] + theta.sin() * y_axis[0]);
+            let y = center[1] + ring_radius * (theta.cos() * x_axis[1] + theta.sin() * y_axis[1]);
+            let z = center[2] + ring_radius * (theta.cos() * x_axis[2] + theta.sin() * y_axis[2]);
+            
+            // Calculate tangent (perpendicular to radius vector in the ring plane)
+            let tx = -theta.sin() * x_axis[0] + theta.cos() * y_axis[0];
+            let ty = -theta.sin() * x_axis[1] + theta.cos() * y_axis[1];
+            let tz = -theta.sin() * x_axis[2] + theta.cos() * y_axis[2];
+            
+            points.push(VortexPoint {
+                position: [x, y, z],
+                tangent: [tx, ty, tz],
+            });
+        }
+        
+        VortexLine { points }
+    }
+
+    fn initialize_vortices_random(&mut self) {        
         // First ring
         let ring_radius = self.radius * 0.5;
         let center = [0.0, 0.0, self.height * 0.3];
@@ -777,50 +907,6 @@ impl VortexSimulation {
             for line in &mut self.vortex_lines {
                 physics::remesh_vortex_line(line, target_spacing, min_spacing, max_spacing);
             }
-        }
-    }
-    
-    fn handle_reconnections(&mut self) {
-        let reconnection_threshold = 0.01 * self.radius;
-        let previous_line_count = self.vortex_lines.len();
-        let previous_total_length = physics::calculate_total_length(&self.vortex_lines);
-        
-        if self.using_gpu && self.compute_core.is_some() {
-            // Use GPU for detecting potential reconnection points
-            let compute_core = self.compute_core.as_ref().unwrap();
-            let reconnection_candidates = compute_core.detect_reconnections(
-                &self.vortex_lines, 
-                reconnection_threshold
-            );
-            
-            if !reconnection_candidates.is_empty() {
-                // Process the GPU-detected reconnection points
-                physics::process_reconnections(&mut self.vortex_lines, reconnection_candidates);
-                
-                // Count as a reconnection event
-                self.stats.reconnection_count += 1;
-                
-                // After reconnection, remove tiny loops and update line data
-                physics::remove_tiny_loops(&mut self.vortex_lines, 0.005 * self.radius);
-            }
-        } else {
-            // Existing CPU implementation
-            physics::handle_reconnections(&mut self.vortex_lines, reconnection_threshold);
-        }
-        
-        // After reconnection, check if line count or length changed significantly
-        let current_line_count = self.vortex_lines.len();
-        let current_total_length = physics::calculate_total_length(&self.vortex_lines);
-        
-        let line_count_changed = current_line_count != previous_line_count;
-        let length_reduced = (previous_total_length - current_total_length) > 0.001;
-        
-        if line_count_changed || length_reduced {
-            log_message(&format!(
-                "Reconnection detected at t={:.3}s: Lines {} -> {}, Length {:.3} -> {:.3}",
-                self.time, previous_line_count, current_line_count,
-                previous_total_length, current_total_length
-            ));
         }
     }
     

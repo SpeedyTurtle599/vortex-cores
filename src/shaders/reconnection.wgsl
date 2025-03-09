@@ -76,7 +76,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let tangent1 = current_point.tangent.xyz;
     
     // Check all points on other lines
-    for (var j = line_idx1 + 1u; j < arrayLength(&line_offsets); j++) {
+    for (var j = 0u; j < arrayLength(&line_offsets); j++) {
+        if (j == line_idx1) {
+            continue;
+        }
+
         let line_offset2 = line_offsets[j];
         
         for (var k = 0u; k < line_offset2.point_count; k++) {
@@ -98,7 +102,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             // Check if tangents are anti-parallel (dot product negative)
             let dot_product = dot(tangent1, tangent2);
             
-            if (dot_product < -0.3) { // Same threshold as in CPU code
+            if (dot_product < -0.3 || dot_product > 0.3) { // Same threshold as in CPU code
                 // Found a potential reconnection
                 let count = atomicAdd(&candidate_counter, 1u);
                 
